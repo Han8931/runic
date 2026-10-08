@@ -1,0 +1,322 @@
+package server
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/creack/pty"
+
+	"github.com/han/runic/internal/protocol"
+)
+
+type Executor struct {
+	logDir          string
+	logDirMu        sync.RWMutex
+	onFinishCommand string
+	processes       sync.Map
+}
+
+type ExecRequest struct {
+	Job      *Job
+	JobQueue *JobQueue
+	OnFinish func(jobID int, result protocol.Result)
+}
+
+func NewExecutor(logDir string) *Executor {
+	return &Executor{logDir: logDir}
+}
+
+func (e *Executor) SetLogDir(dir string) {
+	e.logDirMu.Lock()
+	defer e.logDirMu.Unlock()
+	e.logDir = dir
+}
+
+func (e *Executor) LogDir() string {
+	e.logDirMu.RLock()
+	defer e.logDirMu.RUnlock()
+	return e.logDir
+}
+
+func (e *Executor) SetOnFinishCommand(command string) {
+	e.logDirMu.Lock()
+	defer e.logDirMu.Unlock()
+	e.onFinishCommand = command
+}
+
+func (e *Executor) OutputPathFor(jobID int, logfile string) string {
+	if logfile != "" {
+		return logfile
+	}
+	e.logDirMu.RLock()
+	logDir := e.logDir
+	e.logDirMu.RUnlock()
+	return filepath.Join(logDir, fmt.Sprintf("ru_%d_%s.out", jobID, randSuffix()))
+}
+
+func randSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func (e *Executor) Run(req ExecRequest) {
+	job := req.Job
+	args := job.CommandArgs
+	if len(args) == 0 {
+		args = parseCommand(job.Info.Command)
+	}
+	if len(args) == 0 {
+		req.OnFinish(job.ID, protocol.Result{ExitCode: -1})
+		return
+	}
+
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Dir = job.WorkDir
+	if len(job.Environment) > 0 {
+		cmd.Env = job.Environment
+	}
+
+	usePTY := ptySupported && job.Info.StoreOutput && !job.SeparateStderr
+	if !usePTY {
+		setSysProcAttr(cmd)
+	}
+
+	var outputFile string
+	var outFile *os.File
+	var ptmx *os.File
+
+	if job.Info.StoreOutput {
+		outputFile = job.Info.OutputFilename
+		if outputFile == "" {
+			outputFile = e.OutputPathFor(job.ID, job.Logfile)
+		}
+
+		var err error
+		if job.Info.Attempt > 0 {
+			// Retry attempts append, so the file holds the whole history.
+			outFile, err = os.OpenFile(outputFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		} else {
+			outFile, err = os.Create(outputFile)
+		}
+		if err != nil {
+			req.OnFinish(job.ID, protocol.Result{ExitCode: -1})
+			return
+		}
+		if job.Info.Attempt > 0 {
+			fmt.Fprintf(outFile, "\n── retry %d/%d ──\n", job.Info.Attempt, job.Info.Retries)
+		}
+
+		if job.Info.Message != "" && job.Info.Attempt == 0 {
+			fmt.Fprintf(outFile, "# %s\n\n", job.Info.Message)
+		}
+
+		if job.SeparateStderr {
+			errFile, err := os.Create(outputFile + ".e")
+			if err == nil {
+				cmd.Stderr = errFile
+				defer errFile.Close()
+			}
+		}
+	}
+
+	start := time.Now()
+
+	var ptyCopyDone chan struct{}
+	if usePTY {
+		var err error
+		ptmx, err = pty.Start(cmd)
+		if err != nil {
+			fmt.Fprintf(outFile, "ru: failed to start: %v\n", err)
+			outFile.Close()
+			req.OnFinish(job.ID, protocol.Result{ExitCode: -1})
+			return
+		}
+		ptyCopyDone = make(chan struct{})
+		go func() {
+			defer close(ptyCopyDone)
+			io.Copy(outFile, ptmx)
+		}()
+	} else {
+		if job.Info.StoreOutput {
+			cmd.Stdout = outFile
+			// Without a PTY (Windows, or -E), stderr isn't merged for us; when
+			// it has no .e file of its own it belongs in the output file.
+			if !job.SeparateStderr {
+				cmd.Stderr = outFile
+			}
+		}
+		if err := cmd.Start(); err != nil {
+			if outFile != nil {
+				fmt.Fprintf(outFile, "ru: failed to start: %v\n", err)
+				outFile.Close()
+			}
+			req.OnFinish(job.ID, protocol.Result{ExitCode: -1})
+			return
+		}
+	}
+
+	// Update job PID and output file through the queue's lock
+	if req.JobQueue != nil {
+		req.JobQueue.SetRunning(job.ID, cmd.Process.Pid, outputFile)
+	}
+	e.processes.Store(job.ID, cmd.Process)
+
+	// Enforce the wall-clock timeout: TERM the process group when it fires,
+	// escalating to KILL shortly after for processes that trap TERM.
+	var timedOut atomic.Bool
+	var killTimer *time.Timer
+	if job.Info.TimeoutMS > 0 {
+		pid := cmd.Process.Pid
+		killTimer = time.AfterFunc(time.Duration(job.Info.TimeoutMS)*time.Millisecond, func() {
+			timedOut.Store(true)
+			_ = killProcessGroup(pid)
+			time.AfterFunc(2*time.Second, func() { _ = forceKillProcessGroup(pid) })
+		})
+	}
+
+	err := cmd.Wait()
+	if killTimer != nil {
+		killTimer.Stop()
+	}
+
+	e.processes.Delete(job.ID)
+	if ptmx != nil {
+		// The PTY master can still hold output the job wrote just before
+		// exiting; let the copier drain it (its Read errors out once the child
+		// side closes). Bound the wait in case a grandchild keeps the child
+		// side open, then close ptmx to force the copier's pending Read to
+		// fail — only after it returns is outFile safe to close.
+		select {
+		case <-ptyCopyDone:
+		case <-time.After(2 * time.Second):
+		}
+		ptmx.Close()
+		<-ptyCopyDone
+	}
+	if outFile != nil {
+		outFile.Close()
+	}
+
+	elapsed := time.Since(start)
+	result := protocol.Result{
+		RealTimeMS: elapsed.Milliseconds(),
+	}
+
+	if cmd.ProcessState != nil {
+		result.UserTimeMS = cmd.ProcessState.UserTime().Milliseconds()
+		result.SystemTimeMS = cmd.ProcessState.SystemTime().Milliseconds()
+	}
+
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+			fillSignalInfo(&result, exitErr.ProcessState)
+		} else {
+			result.ExitCode = -1
+		}
+	}
+	result.TimedOut = timedOut.Load()
+
+	req.OnFinish(job.ID, result)
+	e.runOnFinishHook(job, result)
+}
+
+func (e *Executor) Kill(jobID int) error {
+	proc, ok := e.processes.Load(jobID)
+	if !ok {
+		return fmt.Errorf("job %d not running", jobID)
+	}
+	p := proc.(*os.Process)
+	return killProcessGroup(p.Pid)
+}
+
+func (e *Executor) KillAll() {
+	e.processes.Range(func(key, value interface{}) bool {
+		p := value.(*os.Process)
+		killProcessGroup(p.Pid)
+		return true
+	})
+}
+
+func (e *Executor) runOnFinishHook(job *Job, result protocol.Result) {
+	e.logDirMu.RLock()
+	hook := e.onFinishCommand
+	e.logDirMu.RUnlock()
+	if hook == "" {
+		return
+	}
+
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.Command(shell, "-c", hook)
+	cmd.Dir = job.WorkDir
+	cmd.Env = append([]string{}, job.Environment...)
+	cmd.Env = append(cmd.Env,
+		fmt.Sprintf("RUNIC_JOB_ID=%d", job.ID),
+		fmt.Sprintf("RUNIC_EXIT_CODE=%d", result.ExitCode),
+		fmt.Sprintf("RUNIC_OUTPUT=%s", job.Info.OutputFilename),
+		fmt.Sprintf("TS_JOBID=%d", job.ID),
+		fmt.Sprintf("TS_EXIT_CODE=%d", result.ExitCode),
+		fmt.Sprintf("TS_OUTPUT=%s", job.Info.OutputFilename),
+	)
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	// Reap the hook process so it doesn't linger as a zombie. We don't block
+	// the caller on it, so wait in the background and discard the result.
+	go func() { _ = cmd.Wait() }()
+}
+
+func parseCommand(cmd string) []string {
+	var args []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	for _, r := range cmd {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingle {
+			escaped = true
+			continue
+		}
+		if r == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if r == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if r == ' ' && !inSingle && !inDouble {
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteRune(r)
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}

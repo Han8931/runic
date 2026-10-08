@@ -1,0 +1,665 @@
+package server
+
+import (
+	"os"
+	"sync"
+	"time"
+
+	"github.com/han/runic/internal/protocol"
+)
+
+// removeOutputFiles deletes the auto-generated output files of jobs that have
+// left the queue, so cleared/removed jobs don't leave ru_*.out files behind in
+// the log directory forever. User-specified logfiles (-O) are kept — runic
+// didn't choose that path, so it must not delete it. Call without the queue
+// lock held; missing files (job never started) are fine.
+func removeOutputFiles(jobs []*Job) {
+	for _, j := range jobs {
+		if j == nil || !j.Info.StoreOutput || j.Logfile != "" || j.Info.OutputFilename == "" {
+			continue
+		}
+		os.Remove(j.Info.OutputFilename)
+		os.Remove(j.Info.OutputFilename + ".e")
+	}
+}
+
+type Job struct {
+	ID               int
+	Info             protocol.JobInfo
+	CommandArgs      []string
+	ShouldKeepFinish bool
+	GzipOutput       bool
+	SeparateStderr   bool
+	RequireElevel    bool
+	WorkDir          string
+	Environment      []string
+	Logfile          string
+	// Canceled records that a human asked for this attempt to stop (`ru -k`,
+	// `x` in the TUI). The signal that implements the kill is indistinguishable
+	// from a crash at the exit-status level, so without this flag a job with
+	// retries left would be dutifully restarted by the scheduler — the opposite
+	// of what "kill" means.
+	Canceled bool
+	waitChs  []chan protocol.Result
+}
+
+type JobQueue struct {
+	mu       sync.Mutex
+	jobs     []*Job
+	byID     map[int]*Job
+	nextID   int
+	lastID   int
+	sessions map[string]string
+	groups   map[string]bool
+	// worktrees holds the git worktree a session owns, for the sessions that
+	// have one. Keyed by session name; absent means the session has no worktree
+	// and its panes spawn in the daemon's working directory as before.
+	worktrees map[string]SessionWorktree
+	// dirty is set by every mutation and cleared by save(), so snapshots are
+	// only written when the queue actually changed (the server calls save
+	// after every message, including read-only polls).
+	dirty bool
+	// saveMu makes a snapshot save one critical section: see save().
+	saveMu sync.Mutex
+}
+
+func NewJobQueue() *JobQueue {
+	return &JobQueue{
+		byID:      make(map[int]*Job),
+		sessions:  map[string]string{"default": "default"},
+		groups:    map[string]bool{"default": true},
+		worktrees: make(map[string]SessionWorktree),
+	}
+}
+
+// RerunRequest reconstructs a NewJobRequest from an existing job so it can be
+// re-enqueued as a fresh job. DependOn is intentionally dropped — a rerun should
+// not re-wait on the original job's (now-finished) dependencies.
+func (q *JobQueue) RerunRequest(id int) (protocol.NewJobRequest, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	j, ok := q.byID[id]
+	if !ok {
+		return protocol.NewJobRequest{}, false
+	}
+	return protocol.NewJobRequest{
+		Command:        j.Info.Command,
+		CommandArgs:    j.CommandArgs,
+		WorkDir:        j.WorkDir,
+		Environment:    j.Environment,
+		StoreOutput:    j.Info.StoreOutput,
+		SeparateStderr: j.SeparateStderr,
+		GzipOutput:     j.GzipOutput,
+		RequireElevel:  j.RequireElevel,
+		Label:          j.Info.Label,
+		Session:        j.Info.Session,
+		Message:        j.Info.Message,
+		NumSlots:       j.Info.NumSlots,
+		Logfile:        j.Logfile,
+		TimeoutMS:      j.Info.TimeoutMS,
+		Retries:        j.Info.Retries,
+	}, true
+}
+
+func (q *JobQueue) Add(req protocol.NewJobRequest) *Job {
+	return q.AddWithOutputPath(req, nil)
+}
+
+// AddWithOutputPath enqueues a job and, when output is stored, assigns its
+// output filename via pathFor inside the same critical section. Setting the
+// path after Add returns would race with the scheduler: a concurrent poke can
+// start the job first, making the executor pick a different random path than
+// the one later recorded in Info.OutputFilename.
+func (q *JobQueue) AddWithOutputPath(req protocol.NewJobRequest, pathFor func(jobID int, logfile string) string) *Job {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	numSlots := req.NumSlots
+	if numSlots < 1 {
+		numSlots = 1
+	}
+
+	session := req.Session
+	if session == "" {
+		session = "default"
+	}
+	if _, ok := q.sessions[session]; !ok {
+		q.sessions[session] = "default"
+	}
+
+	j := &Job{
+		ID: q.nextID,
+		Info: protocol.JobInfo{
+			ID:          q.nextID,
+			Command:     req.Command,
+			State:       protocol.StateQueued,
+			StoreOutput: req.StoreOutput,
+			DependOn:    req.DependOn,
+			Label:       req.Label,
+			Session:     session,
+			Message:     req.Message,
+			NumSlots:    numSlots,
+			EnqueueTime: time.Now(),
+			TimeoutMS:   req.TimeoutMS,
+			Retries:     req.Retries,
+		},
+		CommandArgs:      req.CommandArgs,
+		ShouldKeepFinish: true,
+		GzipOutput:       req.GzipOutput,
+		SeparateStderr:   req.SeparateStderr,
+		RequireElevel:    req.RequireElevel,
+		WorkDir:          req.WorkDir,
+		Environment:      req.Environment,
+		Logfile:          req.Logfile,
+	}
+	if pathFor != nil && req.StoreOutput {
+		j.Info.OutputFilename = pathFor(j.ID, req.Logfile)
+	}
+
+	q.dirty = true
+	q.jobs = append(q.jobs, j)
+	q.byID[j.ID] = j
+	q.lastID = q.nextID
+	q.nextID++
+	return j
+}
+
+func (q *JobQueue) Remove(id int) bool {
+	q.mu.Lock()
+
+	j, ok := q.byID[id]
+	if !ok || j.Info.State == protocol.StateRunning {
+		q.mu.Unlock()
+		return false
+	}
+
+	q.dirty = true
+	delete(q.byID, id)
+	for i, job := range q.jobs {
+		if job.ID == id {
+			q.jobs = append(q.jobs[:i], q.jobs[i+1:]...)
+			break
+		}
+	}
+	q.mu.Unlock()
+
+	removeOutputFiles([]*Job{j})
+	return true
+}
+
+// GetInfo returns a snapshot copy of the job's info, safe to read without locks.
+func (q *JobQueue) GetInfo(id int) (protocol.JobInfo, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	j, ok := q.byID[id]
+	if !ok {
+		return protocol.JobInfo{}, false
+	}
+	return j.Info, true
+}
+
+// GetJob returns the job pointer. Caller must not read Info fields without holding the queue lock.
+// Used internally by scheduler and executor.
+func (q *JobQueue) GetJob(id int) (*Job, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	j, ok := q.byID[id]
+	return j, ok
+}
+
+// AllInfo returns snapshot copies of all job infos, safe to read without locks.
+func (q *JobQueue) AllInfo() []protocol.JobInfo {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	result := make([]protocol.JobInfo, len(q.jobs))
+	for i, j := range q.jobs {
+		result[i] = j.Info
+	}
+	return result
+}
+
+func (q *JobQueue) LastID() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.lastID
+}
+
+func (q *JobQueue) SetRunning(id int, pid int, outputFile string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if j, ok := q.byID[id]; ok {
+		j.Info.State = protocol.StateRunning
+		j.Info.PID = pid
+		if outputFile != "" {
+			j.Info.OutputFilename = outputFile
+		}
+		j.Info.StartTime = time.Now()
+		q.dirty = true
+	}
+}
+
+func (q *JobQueue) SetLabel(id int, label string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	j, ok := q.byID[id]
+	if !ok {
+		return false
+	}
+	j.Info.Label = label
+	q.dirty = true
+	return true
+}
+
+func (q *JobQueue) SetOutputFilename(id int, outputFile string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if j, ok := q.byID[id]; ok {
+		j.Info.OutputFilename = outputFile
+		q.dirty = true
+	}
+}
+
+func (q *JobQueue) MarkFinished(id int, result protocol.Result) {
+	q.mu.Lock()
+
+	j, ok := q.byID[id]
+	if !ok {
+		q.mu.Unlock()
+		return
+	}
+	j.Info.State = protocol.StateFinished
+	// A killed job reports as canceled rather than as a bare signal death, so
+	// the TUI, `ru -i` and any waiter can tell "I stopped this" from "it broke".
+	result.Canceled = j.Canceled
+	j.Info.Result = result
+	j.Info.EndTime = time.Now()
+	q.dirty = true
+	waitChs := j.waitChs
+	j.waitChs = nil
+	q.mu.Unlock()
+
+	for _, ch := range waitChs {
+		ch <- result
+		close(ch)
+	}
+}
+
+func (q *JobQueue) MarkSkipped(id int) {
+	q.mu.Lock()
+
+	j, ok := q.byID[id]
+	if !ok {
+		q.mu.Unlock()
+		return
+	}
+	j.Info.State = protocol.StateSkipped
+	j.Info.Result = protocol.Result{Skipped: true}
+	j.Info.EndTime = time.Now()
+	q.dirty = true
+	waitChs := j.waitChs
+	j.waitChs = nil
+	q.mu.Unlock()
+
+	for _, ch := range waitChs {
+		ch <- j.Info.Result
+		close(ch)
+	}
+}
+
+func (q *JobQueue) ClearFinished() int {
+	q.mu.Lock()
+
+	var remaining, dropped []*Job
+	for _, j := range q.jobs {
+		if j.Info.State == protocol.StateFinished || j.Info.State == protocol.StateSkipped {
+			delete(q.byID, j.ID)
+			dropped = append(dropped, j)
+		} else {
+			remaining = append(remaining, j)
+		}
+	}
+	q.jobs = remaining
+	if len(dropped) > 0 {
+		q.dirty = true
+	}
+	q.mu.Unlock()
+
+	removeOutputFiles(dropped)
+	return len(dropped)
+}
+
+func (q *JobQueue) PruneFinished(maxKeep int) {
+	q.mu.Lock()
+
+	var finished []*Job
+	for _, j := range q.jobs {
+		if j.Info.State == protocol.StateFinished || j.Info.State == protocol.StateSkipped {
+			finished = append(finished, j)
+		}
+	}
+
+	toRemove := len(finished) - maxKeep
+	if toRemove <= 0 {
+		q.mu.Unlock()
+		return
+	}
+
+	dropped := finished[:toRemove]
+	removeIDs := make(map[int]bool)
+	for _, j := range dropped {
+		removeIDs[j.ID] = true
+		delete(q.byID, j.ID)
+	}
+
+	var remaining []*Job
+	for _, j := range q.jobs {
+		if !removeIDs[j.ID] {
+			remaining = append(remaining, j)
+		}
+	}
+	q.jobs = remaining
+	q.dirty = true
+	q.mu.Unlock()
+
+	removeOutputFiles(dropped)
+}
+
+func (q *JobQueue) MakeUrgent(id int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	idx := -1
+	for i, j := range q.jobs {
+		if j.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return false
+	}
+
+	j := q.jobs[idx]
+	if j.Info.State != protocol.StateQueued {
+		return false
+	}
+
+	firstQueued := -1
+	for i, job := range q.jobs {
+		if job.Info.State == protocol.StateQueued {
+			firstQueued = i
+			break
+		}
+	}
+	if firstQueued < 0 || firstQueued == idx {
+		return true
+	}
+
+	q.dirty = true
+	q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
+	rear := make([]*Job, len(q.jobs[firstQueued:]))
+	copy(rear, q.jobs[firstQueued:])
+	q.jobs = append(q.jobs[:firstQueued], j)
+	q.jobs = append(q.jobs, rear...)
+	return true
+}
+
+func (q *JobQueue) Swap(id1, id2 int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	idx1, idx2 := -1, -1
+	for i, j := range q.jobs {
+		if j.ID == id1 {
+			idx1 = i
+		}
+		if j.ID == id2 {
+			idx2 = i
+		}
+	}
+	if idx1 < 0 || idx2 < 0 {
+		return false
+	}
+	q.jobs[idx1], q.jobs[idx2] = q.jobs[idx2], q.jobs[idx1]
+	q.dirty = true
+	return true
+}
+
+func (q *JobQueue) WaitFor(id int) <-chan protocol.Result {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	ch := make(chan protocol.Result, 1)
+	j, ok := q.byID[id]
+	if !ok {
+		ch <- protocol.Result{ExitCode: -1}
+		close(ch)
+		return ch
+	}
+	if j.Info.State == protocol.StateFinished || j.Info.State == protocol.StateSkipped {
+		ch <- j.Info.Result
+		close(ch)
+		return ch
+	}
+	j.waitChs = append(j.waitChs, ch)
+	return ch
+}
+
+// NextRunnable returns a copy of the next runnable job's info plus its internal ID.
+// Must be called under scheduler lock but NOT under queue lock.
+func (q *JobQueue) NextRunnable(maxSlots int, busySlots int) (*Job, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	freeSlots := maxSlots - busySlots
+	for _, j := range q.jobs {
+		if j.Info.State != protocol.StateQueued {
+			continue
+		}
+		if !q.dependenciesMet(j) {
+			// Waiting on other jobs, not on slots — younger jobs may pass it.
+			continue
+		}
+		need := j.Info.NumSlots
+		if need > maxSlots {
+			// A job asking for more slots than exist would otherwise wait
+			// forever; treat it as needing the whole machine instead.
+			need = maxSlots
+		}
+		if need > freeSlots {
+			// Blocked purely on slots: stop here instead of letting younger
+			// jobs overtake, or a multi-slot job could be starved forever by
+			// a stream of small ones. Slots free up; it runs next.
+			return nil, false
+		}
+		return j, true
+	}
+	return nil, false
+}
+
+func (q *JobQueue) CheckSkippable() []int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var toSkip []int
+	for _, j := range q.jobs {
+		if j.Info.State != protocol.StateQueued {
+			continue
+		}
+		if q.shouldSkip(j) {
+			toSkip = append(toSkip, j.ID)
+		}
+	}
+	return toSkip
+}
+
+func (q *JobQueue) shouldSkip(j *Job) bool {
+	if !j.RequireElevel {
+		return false
+	}
+	for _, depID := range j.Info.DependOn {
+		dep, ok := q.byID[depID]
+		if !ok {
+			continue
+		}
+		if dep.Info.State == protocol.StateFinished && dep.Info.Result.ExitCode != 0 {
+			return true
+		}
+		if dep.Info.State == protocol.StateSkipped {
+			return true
+		}
+	}
+	return false
+}
+
+func (q *JobQueue) dependenciesMet(j *Job) bool {
+	for _, depID := range j.Info.DependOn {
+		dep, ok := q.byID[depID]
+		if !ok {
+			continue
+		}
+		if dep.Info.State != protocol.StateFinished && dep.Info.State != protocol.StateSkipped {
+			return false
+		}
+	}
+	return true
+}
+
+func (q *JobQueue) RunningCount() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	count := 0
+	for _, j := range q.jobs {
+		if j.Info.State == protocol.StateRunning {
+			count++
+		}
+	}
+	return count
+}
+
+func (q *JobQueue) BusySlots() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	slots := 0
+	for _, j := range q.jobs {
+		if j.Info.State == protocol.StateRunning {
+			slots += j.Info.NumSlots
+		}
+	}
+	return slots
+}
+
+// Reset drops every job, all sessions and groups except the defaults, and the
+// ID counters — the queue side of `:reset`. Generated output files of dropped
+// jobs are deleted.
+// Reset drops every job, session, and group, returning the worktrees the
+// dropped sessions owned so the caller can remove them (filesystem work, done
+// outside the lock).
+func (q *JobQueue) Reset() []SessionWorktree {
+	q.mu.Lock()
+	dropped := q.jobs
+	worktrees := make([]SessionWorktree, 0, len(q.worktrees))
+	for _, wt := range q.worktrees {
+		worktrees = append(worktrees, wt)
+	}
+	q.jobs = nil
+	q.byID = make(map[int]*Job)
+	q.sessions = map[string]string{"default": "default"}
+	q.groups = map[string]bool{"default": true}
+	q.worktrees = make(map[string]SessionWorktree)
+	q.nextID, q.lastID = 0, 0
+	q.dirty = true
+	q.mu.Unlock()
+
+	removeOutputFiles(dropped)
+	return worktrees
+}
+
+// MarkCanceled records that a job's current attempt was killed on purpose, so
+// the scheduler resolves it instead of spending a retry on it. It reports
+// whether the job exists and was actually running — a queued or finished job
+// has no attempt to cancel.
+func (q *JobQueue) MarkCanceled(id int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	j, ok := q.byID[id]
+	if !ok || j.Info.State != protocol.StateRunning {
+		return false
+	}
+	j.Canceled = true
+	q.dirty = true
+	return true
+}
+
+// ClearCanceled undoes MarkCanceled, for when the kill that was about to follow
+// it did not happen (the process had already exited, say) and the job's retries
+// should stay available.
+func (q *JobQueue) ClearCanceled(id int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if j, ok := q.byID[id]; ok && j.Canceled {
+		j.Canceled = false
+		q.dirty = true
+	}
+}
+
+// CancelAllRunning marks every running job canceled and returns their IDs; the
+// `kill all` path, which signals the whole set at once.
+func (q *JobQueue) CancelAllRunning() []int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var ids []int
+	for _, j := range q.jobs {
+		if j.Info.State == protocol.StateRunning {
+			j.Canceled = true
+			ids = append(ids, j.ID)
+		}
+	}
+	if len(ids) > 0 {
+		q.dirty = true
+	}
+	return ids
+}
+
+// RequeueForRetry puts a failed job back in the queue when it has retries
+// left, consuming one. Its waiters stay attached — they resolve when the
+// final attempt finishes. A canceled job never requeues: the kill was the
+// point, so retrying it would restart work the user just stopped.
+func (q *JobQueue) RequeueForRetry(id int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	j, ok := q.byID[id]
+	if !ok || j.Canceled || j.Info.Attempt >= j.Info.Retries {
+		return false
+	}
+	j.Info.Attempt++
+	j.Info.State = protocol.StateQueued
+	j.Info.PID = 0
+	q.dirty = true
+	return true
+}
+
+// SetTimeout changes a job's wall-clock timeout (0 clears it). It applies
+// when the job (re)starts; a currently running attempt keeps the timeout it
+// started with.
+func (q *JobQueue) SetTimeout(id int, timeoutMS int64) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	j, ok := q.byID[id]
+	if !ok {
+		return false
+	}
+	j.Info.TimeoutMS = timeoutMS
+	q.dirty = true
+	return true
+}

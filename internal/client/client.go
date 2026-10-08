@@ -1,0 +1,220 @@
+package client
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"time"
+
+	"github.com/han/runic/internal/config"
+	"github.com/han/runic/internal/ipc"
+	"github.com/han/runic/internal/protocol"
+)
+
+type Client struct {
+	conn net.Conn
+}
+
+func Connect() (*Client, error) {
+	path := ipc.SocketPath()
+	dialer := ipc.NewDialer(path)
+	conn, err := dialer.Dial()
+	if err != nil {
+		return nil, err
+	}
+	return &Client{conn: conn}, nil
+}
+
+func (c *Client) Close() {
+	c.conn.Close()
+}
+
+func (c *Client) Send(msg *protocol.Msg) error {
+	return protocol.Send(c.conn, msg)
+}
+
+func (c *Client) Recv() (*protocol.Msg, error) {
+	return protocol.Recv(c.conn)
+}
+
+// recvError unwraps a MsgError response into a Go error.
+func recvError(msg *protocol.Msg) error {
+	p, err := protocol.PayloadAs[protocol.PayloadError](msg)
+	if err != nil {
+		return fmt.Errorf("server error (malformed response)")
+	}
+	return fmt.Errorf("%s", p.Message)
+}
+
+// recvOK reads a single acknowledgement, turning a refusal into an error. Used
+// by every request whose only interesting answer is "did it work".
+func recvOK(c *Client) error {
+	msg, err := c.Recv()
+	if err != nil {
+		return err
+	}
+	if msg.Type == protocol.MsgError {
+		return recvError(msg)
+	}
+	return nil
+}
+
+func KillServer() error {
+	c, err := Connect()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.Send(&protocol.Msg{Type: protocol.MsgKillServer})
+}
+
+func GetVersion() (int, error) {
+	c, err := Connect()
+	if err != nil {
+		return 0, err
+	}
+	defer c.Close()
+
+	if err := c.Send(&protocol.Msg{Type: protocol.MsgGetVersion}); err != nil {
+		return 0, err
+	}
+	msg, err := c.Recv()
+	if err != nil {
+		return 0, err
+	}
+	payload, pErr := protocol.PayloadAs[protocol.PayloadVersion](msg)
+	if pErr != nil {
+		return 0, pErr
+	}
+	return payload.Version, nil
+}
+
+// ResetServer factory-resets the daemon: kills all jobs and panes, drops all
+// sessions/groups, and restores default settings.
+func ResetServer() error {
+	c, err := Connect()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.Send(&protocol.Msg{Type: protocol.MsgReset}); err != nil {
+		return err
+	}
+	return recvOK(c)
+}
+
+func EnsureServer() error {
+	path := ipc.SocketPath()
+	dialer := ipc.NewDialer(path)
+	conn, err := dialer.Dial()
+	if err == nil {
+		version, vErr := serverVersion(conn)
+		conn.Close()
+		switch {
+		case vErr == nil && version == protocol.ProtocolVersion:
+			return nil
+		case vErr == nil:
+			// A daemon is listening but speaks a different protocol. Never
+			// kill it automatically: it may be running jobs and hosting live
+			// shell panes. The user decides when those may die.
+			return fmt.Errorf("running daemon speaks protocol v%d, this ru speaks v%d — finish its work, then `ru -K` and retry",
+				version, protocol.ProtocolVersion)
+		default:
+			var refused errDaemonRefused
+			if errors.As(vErr, &refused) {
+				// Our daemon, but it turned us away (e.g. connection cap).
+				return fmt.Errorf("daemon: %s", refused.msg)
+			}
+			return fmt.Errorf("something unrecognised is listening on %s — stop it or point RUNIC_SOCKET elsewhere", path)
+		}
+	}
+
+	return startServer(dialer)
+}
+
+// ProbeServerVersion reports the protocol version of a running daemon, if
+// any. Unlike EnsureServer it never starts a daemon and works across protocol
+// versions (the version exchange predates every bump).
+func ProbeServerVersion() (int, bool) {
+	conn, err := ipc.NewDialer(ipc.SocketPath()).Dial()
+	if err != nil {
+		return 0, false
+	}
+	defer conn.Close()
+	v, err := serverVersion(conn)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// WaitServerStop waits (bounded) until nothing accepts on the socket.
+func WaitServerStop() {
+	dialer := ipc.NewDialer(ipc.SocketPath())
+	for i := 0; i < 20; i++ {
+		conn, err := dialer.Dial()
+		if err != nil {
+			return
+		}
+		conn.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// errDaemonRefused marks a well-formed MsgError refusal from a live runic
+// daemon (as opposed to garbage from an unrelated listener).
+type errDaemonRefused struct{ msg string }
+
+func (e errDaemonRefused) Error() string { return e.msg }
+
+func serverVersion(conn net.Conn) (int, error) {
+	if err := protocol.Send(conn, &protocol.Msg{Type: protocol.MsgGetVersion}); err != nil {
+		return 0, err
+	}
+	msg, err := protocol.Recv(conn)
+	if err != nil {
+		return 0, err
+	}
+	payload, err := protocol.PayloadAs[protocol.PayloadVersion](msg)
+	if err != nil {
+		if msg.Type == protocol.MsgError {
+			return 0, errDaemonRefused{msg: err.Error()}
+		}
+		return 0, err
+	}
+	return payload.Version, nil
+}
+
+func startServer(dialer ipc.Dialer) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("find executable: %w", err)
+	}
+
+	cmd := exec.Command(exe, "--server")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	setDaemonProcAttr(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start server: %w", err)
+	}
+	cmd.Process.Release()
+
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		conn, err := dialer.Dial()
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+	}
+	hint := ""
+	if p := config.DaemonLogPath(); p != "" {
+		hint = " (see " + p + ")"
+	}
+	return fmt.Errorf("server failed to start within 5 seconds%s", hint)
+}
