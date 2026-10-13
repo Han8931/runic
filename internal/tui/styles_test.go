@@ -95,7 +95,6 @@ func TestThemeContrast(t *testing.T) {
 			"header":          {cFgBright, cHeaderTint},
 			"muted header":    {cFgMuted, cHeaderTint},
 			"footer":          {cFgMuted, cBarBg},
-			"focused footer":  {cFgBright, cSubtleBg},
 			"normal badge":    {cInk, cAccent},
 			"insert badge":    {cInk, cGreen},
 			"command badge":   {cInk, cAmber},

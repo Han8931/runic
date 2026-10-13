@@ -175,25 +175,31 @@ ru session delete ci
 
 ### Interactive TUI (`ru`)
 
-Run `ru` to open the management screen. The job table shows commands across all
-sessions, with group, session, state, timeout, and name columns. A detail pane
-shows the selected job, and a status bar tracks CPU, memory, and system load.
-The session sidebar provides a collapsible group → session → job tree.
+Run `ru` to open the management screen. It is laid out as bordered panes: a
+**Sessions** sidebar with a collapsible group → session → job tree on the left,
+the **Jobs** table across all sessions (group, session, state, timeout, and name
+columns), and a **Details** pane for the selected job beneath the table.
 
-The job table looks like this:
+The Jobs pane has a row of view tabs — **All**, **Running**, **Queued**,
+**Done**, and **Failed**. Press `Tab` / `Shift+Tab` (or `←` / `→` from the table)
+to roll through them, or click a tab. The active tab shows its job count, and
+**Failed** keeps its count visible from any view.
 
 ```
-╭──────────────────────────────────────────────────────────────────────────────╮
-│   ID   GROUP ▲  SESSION  STATE     TIME  TIMEOUT  NAME       COMMAND         │
-│    0   default  build    finished  40s   -        compile    make all        │
-│    1   default  build    running   4s    30m      tests      make test       │
-│    2   default  build    retry 1/2       -        make test  make test       │
-│  ·     work     deploy   no jobs                             — empty session │
-│ ── job details ────────────────────────────────────────────────────────────  │
-│ Command: make all   State: finished   Real time: 40s                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
- MANAGE  sort:group▲               run 1 · queue 1 · done 1 · sess 3   ? help
- HW  CPU 4% ▂░░░░░░░  MEM 2.6G/15.0G ▂░░░░░░░    load 1.11 1.35 1.13 · 12 cpu
+╭────────────────────────╮ ╭──────────────────────────────────────────────────────────╮
+│ SESSIONS               │ │  All 3   Running  Queued  Done  Failed 1                 │
+│ ▾ DEFAULT           1R │ │   ID   GROUP ▲  SESSION  STATE    TIME  TIMEOUT  COMMAND │
+│   ▾ build           1R │ │▌   0   default  build    DONE     40s   -        make all│
+│     #0 compile         │ │    1   default  build    RUNNING  4s    30m      go test │
+│     #1 tests           │ │    2   default  build    EXIT 2   1s    -        go vet  │
+│     #2 lint            │ ╰──────────────────────────────────────────────────────────╯
+│                        │ ╭──────────────────────────────────────────────────────────╮
+│                        │ │  job details ────────────────────────────────────────────│
+│                        │ │  Command: make all                                       │
+│                        │ │  State: finished                                         │
+╰────────────────────────╯ ╰──────────────────────────────────────────────────────────╯
+ j/k  move   tab  views   ⏎  output   /  filter   :  command   space  select   s  sort
+ MANAGE  VIEW All  SESS 3  MSG Ready          CPU  4% ▂░░░░░░░  MEM 2.6G/15.0G ▂░░░░░░░
 ```
 
 The **TIMEOUT** column shows each job's wall-clock limit (`-` = none) and the
@@ -204,9 +210,12 @@ Press `Enter` on a job to open its output in the pager. Empty sessions have a
 placeholder row; `Enter` opens their shells. Use the session picker (`S`) to
 open any session, and `Ctrl+B d` to return to the management screen.
 
-The status bar shows session and job counts and the current mode: `MANAGE`
-(the table), `INSERT` (a shell pane), or `COMMAND` (a command prompt). Inside a
-session, it also shows the focused pane's Git branch.
+Under the panes, a hint bar lists the keys that apply right now (it turns into
+the prompt while filtering or typing a `:` command, and into the question while
+confirming). The status bar below it shows the current mode — `MANAGE` (the
+table), `INSERT` (a shell pane), or `COMMAND` (a command prompt) — the active
+view, the session count, the last message, and CPU, memory, and system load.
+Inside a session, it also shows the focused pane's Git branch.
 
 Bare `ru` and `ru -S` both open this screen; `ru -j` opens it in **jobs-only**
 mode, and `ru -l` still just prints the job list to stdout. `q` quits from this
@@ -229,8 +238,9 @@ for a key/command cheatsheet.
 | `Enter` | Open the cursor job's **output** (the pager); on an empty-session row, open that session's shell panes |
 | `o` | Open the output pager (scrollable; follows running jobs); press `i` there to overlay job info |
 | `S` | Open the session picker, including empty sessions |
+| `Tab` / `Shift+Tab` | Roll the job table through its views: All, Running, Queued, Done, Failed (`←` / `→` also work from the table) |
 | `,n` | Toggle the session sidebar |
-| `Tab` | Switch focus between the sidebar and job table |
+| `Ctrl+w h` / `Ctrl+w l` | Focus the sidebar / the job table |
 | `h` / `l` | Collapse / toggle a node in the sidebar |
 | `m` / `A` | Open the sidebar action menu / toggle sidebar zoom |
 | `e` | Edit the cursor row in one box — a job row: job name, its session's name/group, and its timeout (empty = none); a session row: name + group |

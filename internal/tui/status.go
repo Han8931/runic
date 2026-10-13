@@ -7,42 +7,59 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// The split view's airline-style footer: mode indicator, session, git branch,
-// and job/slot counts.
+// The split view's status bar, in the same gorae style as the management
+// screen's: mode chip, LABEL value pairs, and key caps on the right.
 
 func (m model) renderFooter() string {
-	if m.status != "" {
-		statusStyle := airlineInfo
-		if strings.HasPrefix(m.status, "error:") {
-			statusStyle = airlineError
-		}
-		return renderAirline(m.width, []statusSegment{
-			{text: " " + m.modeName() + " ", style: m.modeStyle()},
-			{text: " " + m.status + " ", style: statusStyle},
-		}, m.branchSegments())
-	}
-
-	left := []statusSegment{
-		{text: " " + m.modeName() + " ", style: m.modeStyle()},
-		{text: " " + m.activeSession + " ", style: airlineFocus},
-	}
-
+	val := func(s string) string { return statusValueStyle.Render(" " + s + " ") }
+	left := m.modeStyle().Render(" "+m.modeName()+" ") + statusPair("SESSION", val(m.activeSession))
 	// The pane counter earns its place in a tiling view: it is the only way to
 	// tell "this session has one pane" from "the others are off-screen".
 	if n := m.paneCount(); n > 1 {
-		left = append(left, statusSegment{
-			text:  fmt.Sprintf(" pane %d/%d ", m.focusedPaneIndex()+1, n),
-			style: airlineInfo,
-		})
+		left += statusPair("PANE", val(fmt.Sprintf("%d/%d", m.focusedPaneIndex()+1, n)))
+	}
+	switch {
+	case strings.HasPrefix(m.status, "error"):
+		left += " " + dangerChipStyle.Render(" ERR ") + val(m.status)
+	case m.status != "":
+		left += statusPair("MSG", val(m.status))
 	}
 
-	right := m.branchSegments()
-	right = append(right,
-		statusSegment{text: fmt.Sprintf(" jobs %d ", m.jobCount()), style: airlineMuted},
-		statusSegment{text: fmt.Sprintf(" slots %d ", m.maxSlots), style: airlineMuted},
-		statusSegment{text: " ^B d:detach ^B |/- split ", style: airlineFocus},
-	)
-	return renderAirline(m.width, left, right)
+	right := ""
+	if m.gitBranch != "" {
+		right += statusPair("BRANCH", val("⊕ "+m.gitBranch))
+	}
+	right += statusPair("JOBS", val(fmt.Sprint(m.jobCount()))) +
+		statusPair("SLOTS", val(fmt.Sprint(m.maxSlots))) + " " +
+		statusKeys([]keyHint{{"^B d", "detach"}, {"^B |/-", "split"}})
+	return renderStatusBar(m.width, left, right)
+}
+
+// statusKeys renders key caps for the status bar's right edge.
+func statusKeys(hints []keyHint) string {
+	var parts []string
+	for _, h := range hints {
+		parts = append(parts, keyCapStyle.Render(" "+h.key+" ")+statusValueStyle.Foreground(cFgDim).Render(" "+h.label+" "))
+	}
+	return strings.Join(parts, statusBarStyle.Render(" "))
+}
+
+// statusPair renders a gorae-style LABEL value pair for a status bar.
+func statusPair(label, value string) string {
+	return statusLabelStyle.Render(" "+label) + value
+}
+
+// renderStatusBar lays left and right out on one full-width bar. When both
+// don't fit, the right side goes first: the mode and message matter more.
+func renderStatusBar(width int, left, right string) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right) > width {
+		right = ""
+	}
+	pad := max(0, width-lipgloss.Width(left)-lipgloss.Width(right))
+	return fitToWidth(left+statusBarStyle.Render(strings.Repeat(" ", pad))+right, width)
 }
 
 // modeName reports the current editing mode in vim terms: COMMAND while a TUI
@@ -59,48 +76,6 @@ func (m model) modeStyle() lipgloss.Style {
 		return modeCommandStyle
 	}
 	return modeInsertStyle
-}
-
-// branchSegments returns the git-branch status segment for the launch
-// directory, or nothing when not in a git repository.
-func (m model) branchSegments() []statusSegment {
-	if m.gitBranch == "" {
-		return nil
-	}
-	return []statusSegment{{text: " ⊕ " + m.gitBranch + " ", style: branchStyle}}
-}
-
-type statusSegment struct {
-	text  string
-	style lipgloss.Style
-}
-
-func renderAirline(width int, left, right []statusSegment) string {
-	if width <= 0 {
-		return ""
-	}
-
-	leftStr := renderStatusSegments(left)
-	rightStr := renderStatusSegments(right)
-	space := width - lipgloss.Width(leftStr) - lipgloss.Width(rightStr)
-	if space < 1 {
-		line := leftStr + rightStr
-		return fitToWidth(line, width)
-	}
-	return leftStr + airlineMuted.Render(strings.Repeat(" ", space)) + rightStr
-}
-
-func renderStatusSegments(segments []statusSegment) string {
-	var b strings.Builder
-	for i, segment := range segments {
-		if i > 0 {
-			// A hairline between chips: with several colored segments in a row, a
-			// bare space lets two of them read as one wide chip.
-			b.WriteString(airlineMuted.Foreground(cRule).Render("│"))
-		}
-		b.WriteString(segment.style.Render(segment.text))
-	}
-	return b.String()
 }
 
 // focusedPaneIndex is the focused pane's position in the active session's

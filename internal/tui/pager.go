@@ -84,13 +84,9 @@ func findMatches(lines []string, q string) []int {
 }
 
 func (m model) pagerBodyHeight() int {
-	footer := 1
-	search := 0
-	if m.jobs.pager.searching {
-		search = 1
-	}
+	footer := 2 // hint bar (or the search prompt) + status bar
 	info := len(m.pagerInfoLines(m.width - 2))
-	body := m.height - 2 - footer - search - info // top + bottom border
+	body := m.height - 2 - footer - info // top + bottom border
 	if body < 1 {
 		body = 1
 	}
@@ -352,14 +348,25 @@ func (m model) renderPager(w, h int) string {
 	lines = append(lines, boxedBottom(w, focusBorderStyle))
 	if p.searching {
 		lines = append(lines, fitToWidth(inputStyle.Render("/")+m.textInput.View(), w))
+	} else {
+		lines = append(lines, renderHintBar([]keyHint{
+			{"j/k", "scroll"}, {"gg/G", "top/bottom"}, {"^d/^u", "half page"},
+			{"/", "search"}, {"n", "next match"}, {"i", "job info"}, {"q", "back"},
+		}, w))
 	}
-	pos := fmt.Sprintf(" %d-%d/%d ", min(p.offset+1, len(p.lines)), min(p.offset+bodyH, len(p.lines)), len(p.lines))
-	lines = append(lines, renderAirline(w, []statusSegment{
-		{text: " PAGER ", style: modeCommandStyle},
-		{text: pos, style: airlineFocus},
-	}, []statusSegment{
-		{text: " j/k gg G /n i:info  q:back ", style: airlineFocus},
-	}))
+	val := func(s string) string { return statusValueStyle.Render(" " + s + " ") }
+	state := "finished"
+	if p.running {
+		state = "running"
+		if p.follow {
+			state = "following"
+		}
+	}
+	left := modeCommandStyle.Render(" PAGER ") +
+		statusPair("JOB", val(fmt.Sprintf("#%d", p.jobID))) +
+		statusPair("LINES", val(fmt.Sprintf("%d-%d/%d", min(p.offset+1, len(p.lines)), min(p.offset+bodyH, len(p.lines)), len(p.lines)))) +
+		statusPair("STATE", val(state))
+	lines = append(lines, renderStatusBar(w, left, ""))
 
 	return joinExact(lines, w, h)
 }

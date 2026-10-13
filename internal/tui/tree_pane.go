@@ -179,19 +179,10 @@ func (m model) toggleTree() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleTreeKey processes sidebar keys. `tab` moves focus between the tree and
-// the list; while the tree has focus it owns navigation and fold keys. The bool
-// reports whether the key was consumed (false lets the list handler run).
+// handleTreeKey processes sidebar keys: while the tree has focus it owns
+// navigation and fold keys. The bool reports whether the key was consumed (false
+// lets the list handler run). Focus moves with Ctrl+W h/l; Tab rolls the views.
 func (m model) handleTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
-	switch msg.String() {
-	case "tab":
-		if m.jobs.tree.show {
-			m.jobs.tree.focus = !m.jobs.tree.focus
-			return m, nil, true
-		}
-		return m, nil, false
-	}
-
 	if !m.jobs.tree.show || !m.jobs.tree.focus {
 		return m, nil, false
 	}
@@ -689,5 +680,3 @@ func (m model) treeHeaderCell(width int) string {
 	}
 	return s.Render(body.left + body.right)
 }
-
-func treeDividerCell() string { return borderStyle.Render("│") }

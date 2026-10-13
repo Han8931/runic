@@ -408,6 +408,9 @@ func run(jobsOnly bool) error {
 	m := newModel(nil)
 	m.activeSession = ""
 	m.jobsOnly = jobsOnly
+	// The Sessions pane starts open, list focused: the three-pane screen is
+	// the home view. `,n` still folds it away.
+	m.jobs.tree.show = true
 	m, _ = m.openJobsView()
 	// A rejected theme otherwise only shows up in `ru config list`; the alt
 	// screen would hide a stderr line, so say it in the status bar instead.

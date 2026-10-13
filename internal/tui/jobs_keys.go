@@ -91,7 +91,7 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	// Ctrl+W chord: vim-style focus movement between the tree sidebar (left) and
-	// the job list (right), mirroring the split-view pane nav. `tab` also toggles.
+	// the job list (right), mirroring the split-view pane nav.
 	if m.ctrlWPressed {
 		m.ctrlWPressed = false
 		switch key {
@@ -130,8 +130,22 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startPending(',')
 	}
 
-	// Tree sidebar: `tab` moves focus; while it has focus it owns navigation
-	// and fold keys (else the list handler below runs).
+	// Tab / Shift+Tab roll the job table through its views (All, Running, …)
+	// from either pane, as in gorae. With the list focused, ←/→ do the same.
+	if !m.jobs.tree.menu.active {
+		listFocused := !m.jobs.tree.show || !m.jobs.tree.focus
+		switch {
+		case key == "tab", key == "right" && listFocused:
+			(&m).cycleTab(1)
+			return m, nil
+		case key == "shift+tab", key == "left" && listFocused:
+			(&m).cycleTab(-1)
+			return m, nil
+		}
+	}
+
+	// Tree sidebar: while it has focus it owns navigation and fold keys (else
+	// the list handler below runs).
 	if nm, cmd, done := m.handleTreeKey(msg); done {
 		return nm, cmd
 	}
@@ -291,8 +305,11 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // mgmtBodyTopLine is the terminal row (0-based) where the first list row is
-// drawn: after the top border and the column header.
-func (m model) mgmtBodyTopLine() int { return 2 }
+// drawn: after the Jobs pane's top border, the tab strip and the column header.
+func (m model) mgmtBodyTopLine() int { return 3 }
+
+// mgmtTabStripLine is the terminal row holding the view tabs.
+const mgmtTabStripLine = 1
 
 // handleMouse maps clicks and wheel scrolls on the management screen to row
 // selection/activation. Mouse events are only captured while this screen shows.
@@ -312,10 +329,31 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		(&m).jobsMove(1)
 		return m, nil
 	case tea.MouseButtonLeft:
+		if m.jobsOverlay() {
+			return m, nil
+		}
+		l := m.jobsLayout()
+		if l.zoom || msg.X <= l.listX || msg.X >= l.listX+l.listW-1 {
+			return m, nil
+		}
+		if msg.Y == mgmtTabStripLine {
+			// A click on a tab switches to it.
+			_, spans := m.renderTabStrip(l.listW - 2)
+			x := msg.X - l.listX - 1
+			for _, sp := range spans {
+				if x >= sp.start && x < sp.end {
+					(&m).switchTab(sp.tab)
+					break
+				}
+			}
+			return m, nil
+		}
 		top := m.mgmtBodyTopLine()
 		if msg.Y < top || msg.Y >= top+m.jobsBodyHeight() {
 			return m, nil
 		}
+		// Clicking the table hands it focus, like clicking a pane.
+		m.jobs.tree.focus = false
 		idx := m.jobs.offset + (msg.Y - top)
 		if idx < 0 || idx >= len(m.jobs.rows) {
 			return m, nil

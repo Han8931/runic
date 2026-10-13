@@ -118,7 +118,7 @@ func durationCompact(d time.Duration) string {
 }
 
 // padRowBg extends a highlighted row's background to the full inner width. For
-// unhighlighted rows (bg == nil) it is a no-op — jobsBordered pads those.
+// unhighlighted rows (bg == nil) it is a no-op — the pane box pads those.
 func padRowBg(s string, width int, bg lipgloss.TerminalColor) string {
 	if bg == nil {
 		return s
@@ -166,94 +166,107 @@ func (m model) renderJobsView(w, h int) string {
 	if m.jobs.mode == jobsPager {
 		return m.renderPager(w, h)
 	}
-	if w < 8 || h < 4 {
+	if w < 20 || h < 6 {
 		return strings.Repeat("\n", max(0, h-1))
 	}
-	inner := w - 2
-	bodyH := m.jobsBodyHeight()
+	l := m.jobsLayout()
+	gap := strings.Repeat(" ", paneGap)
+
+	var tree, list, detail []string
+	if l.showTree {
+		tree = m.renderTreePanel(l.treeW, l.paneH)
+	}
+	if !l.zoom {
+		list = m.renderListPanel(l.listW, l.listH, l.overlay)
+		if l.detailH > 0 {
+			detail = m.renderDetailPanel(l.detailW, l.detailH)
+		}
+	}
+
 	lines := make([]string, 0, h)
-
-	// Overlays (help / edit form / session picker) take the whole box; the tree
-	// sidebar only shares space with the plain list, and only if there's room.
-	overlay := m.jobs.helping || m.jobs.form.active || m.jobs.settings.active ||
-		m.jobs.picker.active || m.jobs.tree.menu.active
-	showTree := m.jobs.tree.show && !overlay && inner >= 46
-	// NerdTree-style zoom (`A`): the tree fills the box; the list is hidden. The
-	// divider still costs a column so the tree cell width is inner-1.
-	zoom := showTree && m.jobs.tree.zoom
-
-	treeW := treePaneWidth
-	listInner := inner
-	if showTree {
-		if zoom {
-			treeW = inner - 1
-			listInner = 0
-		} else {
-			listInner = inner - treePaneWidth - 1
+	for i := 0; i < l.paneH; i++ {
+		var line string
+		if l.showTree {
+			line = tree[i]
+			if l.zoom {
+				lines = append(lines, line)
+				continue
+			}
+			line += gap
 		}
-	}
-	// Column 0 of the list is a cursor gutter, like the sidebar's.
-	cols := computeJobColumns(max(1, listInner-1))
-
-	// A row is [tree cell][divider][list line] when the sidebar is shown.
-	treeLines := []string(nil)
-	treeIdx := 0
-	if showTree {
-		treeLines = m.treePaneLines(bodyH+jobsDetailHeight, treeW)
-	}
-	withTree := func(right string) string {
-		if !showTree {
-			return right
+		switch {
+		case i < l.listH:
+			line += list[i]
+		case i-l.listH < len(detail):
+			line += detail[i-l.listH]
 		}
-		cell := strings.Repeat(" ", treeW)
-		if treeIdx < len(treeLines) {
-			cell = treeLines[treeIdx]
-		}
-		treeIdx++
-		if zoom {
-			return cell + treeDividerCell()
-		}
-		return cell + treeDividerCell() + right
+		lines = append(lines, line)
 	}
 
-	lines = append(lines, boxedTop(w, m.jobsBoxTitle(), borderStyle))
-	header := jobsHeaderStyle.Render(fitToWidth(" "+m.jobsHeaderRow(cols), listInner))
-	if zoom {
-		header = m.treeHeaderCell(treeW) + treeDividerCell()
-	} else if showTree {
-		header = m.treeHeaderCell(treeW) + treeDividerCell() + header
-	}
-	lines = append(lines, m.jobsBordered(header, inner))
-
-	regionH := bodyH
-	if overlay {
-		regionH = bodyH + jobsDetailHeight
-	}
-	body := m.mgmtBodyLines(regionH, listInner, cols)
-	for _, bl := range body {
-		lines = append(lines, m.jobsBordered(withTree(bl), inner))
-	}
-
-	if !overlay {
-		for _, dl := range m.jobsDetailLines(jobsDetailHeight, listInner) {
-			lines = append(lines, m.jobsBordered(withTree(dl), inner))
-		}
-	}
-
-	lines = append(lines, boxedBottom(w, borderStyle))
-	if m.jobs.filtering {
-		lines = append(lines, fitToWidth(inputStyle.Render("/")+m.textInput.View(), w))
-	}
+	lines = append(lines, m.jobsFooterLine(w))
 	if m.jobs.commanding {
-		lines = append(lines, fitToWidth(inputStyle.Render(m.cmdInput.View()), w))
 		// Candidates from an ambiguous tab, so completion is a visible choice
 		// rather than a blind rotation.
 		lines = append(lines, m.completionLines(w)...)
 	}
-	lines = append(lines, m.jobsFooter(w))
-	lines = append(lines, m.renderHWBar(w))
-
+	lines = append(lines, m.jobsStatusBar(w))
 	return joinExact(lines, w, h)
+}
+
+// paneBox frames lines in a rounded border, gorae-style. The focused pane draws
+// its frame in the accent so focus reads from across the screen.
+func paneBox(lines []string, w, h int, focused bool) []string {
+	st := borderStyle
+	if focused {
+		st = focusBorderStyle
+	}
+	inner := max(0, w-2)
+	side := st.Render("│")
+	out := make([]string, 0, h)
+	out = append(out, st.Render("╭"+strings.Repeat("─", inner)+"╮"))
+	for i := 0; i < h-2; i++ {
+		l := ""
+		if i < len(lines) {
+			l = lines[i]
+		}
+		out = append(out, side+fitToWidth(l, inner)+side)
+	}
+	return append(out, st.Render("╰"+strings.Repeat("─", inner)+"╯"))
+}
+
+// renderTreePanel draws the Sessions pane: its header (with the inbox count)
+// over the foldable group → session → job tree.
+func (m model) renderTreePanel(w, h int) []string {
+	inner := w - 2
+	lines := append([]string{m.treeHeaderCell(inner)}, m.treePaneLines(max(0, h-3), inner)...)
+	return paneBox(lines, w, h, m.jobs.tree.focus)
+}
+
+// renderDetailPanel draws the Details pane: the job (or, with the sidebar
+// driving, the session) under the cursor, inset a column from the border.
+func (m model) renderDetailPanel(w, h int) []string {
+	lines := m.jobsDetailLines(max(0, h-2), max(0, w-4))
+	for i, l := range lines {
+		lines[i] = " " + l
+	}
+	return paneBox(lines, w, h, false)
+}
+
+// renderListPanel draws the Jobs pane: the view tabs, the column header and the
+// job rows — or, while a modal is open, that modal in place of the table.
+func (m model) renderListPanel(w, h int, overlay bool) []string {
+	inner := w - 2
+	strip, _ := m.renderTabStrip(inner)
+	lines := []string{strip}
+	// Column 0 of the list is a cursor gutter, like the sidebar's.
+	cols := computeJobColumns(max(1, inner-1))
+	if overlay {
+		lines = append(lines, m.mgmtBodyLines(max(1, h-3), inner, cols)...)
+	} else {
+		lines = append(lines, jobsHeaderStyle.Render(fitToWidth(" "+m.jobsHeaderRow(cols), inner)))
+		lines = append(lines, m.mgmtBodyLines(max(1, h-4), inner, cols)...)
+	}
+	return paneBox(lines, w, h, !m.jobs.tree.focus || !m.jobs.tree.show)
 }
 
 // mgmtBodyLines renders the visible window of the group→session→job list (or the
@@ -278,7 +291,7 @@ func (m model) mgmtBodyLines(bodyH, inner int, cols columnWidths) []string {
 	if len(m.jobs.rows) == 0 {
 		// An empty queue is the normal state of a fresh daemon, so the empty
 		// space says what to do next rather than just reporting emptiness.
-		headline, hint := "no jobs yet", "submit one with  ru <command>   ·  ? for help"
+		headline, hint := m.jobs.tab.emptyMessage()
 		if m.jobs.filter != "" {
 			headline, hint = "nothing matches /"+m.jobs.filter, "esc clears the filter"
 		}
@@ -413,7 +426,9 @@ func (m model) helpLines(bodyH, inner int) []string {
 		row("o", "open the output pager"),
 		row("S", "session picker: open/new/edit, d deletes"),
 		row("  d on a ⊕", "keeps a worktree holding uncommitted work"),
-		row(",n / tab", "toggle session tree · focus tree ⇄ list"),
+		row("tab / ⇧tab", "roll views: all/running/queued/done/failed"),
+		row("← / →", "roll views (from the job list)"),
+		row(",n", "toggle session tree"),
 		row("^w h/l", "focus tree (left) / list (right)"),
 		row("  in tree", "l/o/␣ fold · h collapse · ⏎ open · e/n/d"),
 		row("  m / A", "action menu · zoom the tree full-width"),
@@ -449,53 +464,54 @@ func (m model) helpLines(bodyH, inner int) []string {
 	return centerBox(modalBox("Help", content, boxInner), bodyH, inner)
 }
 
-// renderHWBar is the system-wide hardware status bar shown at the bottom of the
-// job view: CPU, memory, load average, and core count.
+// renderHWBar is the hardware section on the right of the status bar: CPU and
+// memory with gauges, then load average and core count. Pieces that don't fit
+// in w columns are dropped from the end.
 func (m model) renderHWBar(w int) string {
 	s := m.hwStats
-	left := []statusSegment{{text: " HW ", style: airlineMuted}}
 	if !s.CPUOK && !s.MemOK && !s.LoadOK {
-		left = append(left, statusSegment{text: " gathering… (or unavailable on this platform) ", style: airlineMuted})
-		return renderAirline(w, left, nil)
+		return statusValueStyle.Foreground(cFgDim).Render(" gathering… (or unavailable on this platform) ")
 	}
+	var parts []string
 	if s.CPUOK {
-		style := airlineInfo
+		val := statusValueStyle
 		if s.CPUPercent >= 90 {
-			style = airlineError
+			val = val.Foreground(cRed).Bold(true)
 		}
-		left = append(left, statusSegment{
-			text:  fmt.Sprintf(" CPU %3.0f%% %s ", s.CPUPercent, gauge(s.CPUPercent, 8)),
-			style: style,
-		})
+		parts = append(parts, statusPair("CPU", val.Render(fmt.Sprintf(" %3.0f%% %s ", s.CPUPercent, gauge(s.CPUPercent, 8)))))
 	}
 	if s.MemOK {
-		style := airlineInfo
-		if s.MemTotal > 0 && float64(s.MemUsed)/float64(s.MemTotal) >= 0.9 {
-			style = airlineError
-		}
-		memText := fmt.Sprintf(" MEM %s ", humanBytes(s.MemTotal))
+		val := statusValueStyle
+		text := humanBytes(s.MemTotal)
 		if s.MemUsed > 0 && s.MemTotal > 0 {
-			// Same shape as the CPU segment: value + gauge, so the two chips
-			// read as one system.
+			// Same shape as the CPU segment: value + gauge, so the two read as
+			// one system.
 			pct := float64(s.MemUsed) / float64(s.MemTotal) * 100
-			memText = fmt.Sprintf(" MEM %s/%s %s ", humanBytes(s.MemUsed), humanBytes(s.MemTotal), gauge(pct, 8))
+			if pct >= 90 {
+				val = val.Foreground(cRed).Bold(true)
+			}
+			text = fmt.Sprintf("%s/%s %s", humanBytes(s.MemUsed), humanBytes(s.MemTotal), gauge(pct, 8))
 		}
-		left = append(left, statusSegment{text: memText, style: style})
+		parts = append(parts, statusPair("MEM", val.Render(" "+text+" ")))
 	}
-
-	// One quiet segment on the right instead of two competing chips.
-	var parts []string
+	var quiet []string
 	if s.LoadOK {
-		parts = append(parts, fmt.Sprintf("load %.2f %.2f %.2f", s.Load[0], s.Load[1], s.Load[2]))
+		quiet = append(quiet, fmt.Sprintf("load %.2f %.2f %.2f", s.Load[0], s.Load[1], s.Load[2]))
 	}
 	if s.NumCPU > 0 {
-		parts = append(parts, fmt.Sprintf("%d cpu", s.NumCPU))
+		quiet = append(quiet, fmt.Sprintf("%d cpu", s.NumCPU))
 	}
-	var right []statusSegment
-	if len(parts) > 0 {
-		right = append(right, statusSegment{text: " " + strings.Join(parts, " · ") + " ", style: airlineMuted})
+	if len(quiet) > 0 {
+		parts = append(parts, statusValueStyle.Foreground(cFgDim).Render(" "+strings.Join(quiet, " · ")+" "))
 	}
-	return renderAirline(w, left, right)
+	out := ""
+	for _, p := range parts {
+		if lipgloss.Width(out)+lipgloss.Width(p) > w {
+			break
+		}
+		out += p
+	}
+	return out
 }
 
 // gauge renders a fixed-width █/░ bar for a 0..100 percentage.
@@ -529,11 +545,6 @@ func humanBytes(b uint64) string {
 		exp = len(suffix) - 1
 	}
 	return fmt.Sprintf("%.1f%s", float64(b)/float64(div), suffix[exp])
-}
-
-func (m model) jobsBordered(content string, inner int) string {
-	b := borderStyle.Render("│")
-	return b + fitToWidth(content, inner) + b
 }
 
 func jobStateCounts(jobs []protocol.JobInfo) (running, queued, finished, failed int) {
@@ -683,36 +694,126 @@ func styleJobDetailLine(line string, inner int) string {
 	return truncateToWidth(line, inner)
 }
 
-func (m model) jobsFooter(w int) string {
-	if m.jobs.confirm.kind != confirmNone {
-		var q string
-		switch m.jobs.confirm.kind {
-		case confirmRemove:
-			if n := len(m.jobs.confirm.ids); n == 1 {
-				q = fmt.Sprintf(" remove job %d? (y/n) ", m.jobs.confirm.ids[0])
-			} else {
-				q = fmt.Sprintf(" remove %d jobs? (y/n) ", n)
-			}
-		case confirmDeleteSession:
-			q = fmt.Sprintf(" delete session %q? (y/n) ", m.jobs.confirm.session)
-		case confirmDiscardSession:
-			// Name the loss, not just the action: this prompt is the last thing
-			// between an agent's uncommitted work and `rm -rf`.
-			q = fmt.Sprintf(" %q has %s — discard it? (y/n) ",
-				m.jobs.confirm.session, shorten(m.jobs.confirm.detail, 70))
-		case confirmDeleteGroup:
-			q = fmt.Sprintf(" delete group %q? (y/n) ", m.jobs.confirm.group)
-		case confirmReset:
-			q = " reset runic? kills all jobs & panes, deletes sessions, restores default settings (y/n) "
-		default:
-			q = " clear all finished jobs? (y/n) "
+func (m model) confirmQuestion() string {
+	switch m.jobs.confirm.kind {
+	case confirmRemove:
+		if n := len(m.jobs.confirm.ids); n != 1 {
+			return fmt.Sprintf("Remove %d jobs?", n)
 		}
-		return renderAirline(w, []statusSegment{
-			{text: " CONFIRM ", style: airlineError},
-			{text: q, style: airlineInfo},
-		}, nil)
+		return fmt.Sprintf("Remove job %d?", m.jobs.confirm.ids[0])
+	case confirmDeleteSession:
+		return fmt.Sprintf("Delete session %q?", m.jobs.confirm.session)
+	case confirmDiscardSession:
+		// Name the loss, not just the action: this prompt is the last thing
+		// between an agent's uncommitted work and `rm -rf`.
+		return fmt.Sprintf("%q has %s — discard it?",
+			m.jobs.confirm.session, shorten(m.jobs.confirm.detail, 70))
+	case confirmDeleteGroup:
+		return fmt.Sprintf("Delete group %q?", m.jobs.confirm.group)
+	case confirmReset:
+		return "Reset runic? Kills all jobs & panes, deletes sessions, restores default settings."
 	}
-	running, queued, finished, failed := jobStateCounts(m.visibleJobs())
+	return "Clear all finished jobs?"
+}
+
+// jobsFooterLine is the row above the status bar, as in gorae: the open prompt
+// (filter or command line) if any, else the confirmation question, else what
+// may follow a pending two-key chord, else the context key hints.
+func (m model) jobsFooterLine(w int) string {
+	switch {
+	case m.jobs.filtering:
+		return fitToWidth(inputStyle.Render("/")+m.textInput.View(), w)
+	case m.jobs.commanding:
+		return fitToWidth(inputStyle.Render(m.cmdInput.View()), w)
+	case m.jobs.confirm.kind != confirmNone:
+		lead := dangerChipStyle.Render(" CONFIRM ") + " " + finishedErrStyle.Render(m.confirmQuestion()) + "  "
+		return fitToWidth(lead+renderHintBar([]keyHint{{"y", "yes"}, {"n/esc", "cancel"}}, max(0, w-lipgloss.Width(lead))), w)
+	}
+	if prefix, hints := m.pendingHints(); prefix != "" {
+		lead := warnChipStyle.Render(" "+prefix+"… ") + " "
+		return fitToWidth(lead+renderHintBar(hints, max(0, w-lipgloss.Width(lead))), w)
+	}
+	return renderHintBar(m.jobsHints(), w)
+}
+
+// keyHint is one entry of the hint bar: a key cap followed by a short label.
+type keyHint struct{ key, label string }
+
+// renderHintBar draws key caps ( j  move   tab  views …) on one row, dropping
+// trailing hints that don't fit rather than wrapping.
+func renderHintBar(hints []keyHint, width int) string {
+	var b strings.Builder
+	used := 0
+	for i, h := range hints {
+		chip := keyCapStyle.Render(" "+h.key+" ") + " " + keyLabelStyle.Render(h.label)
+		cw := lipgloss.Width(chip)
+		sep := 0
+		if i > 0 {
+			sep = 2
+		}
+		if used+sep+cw > width {
+			break
+		}
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(chip)
+		used += sep + cw
+	}
+	return fitToWidth(b.String(), width)
+}
+
+// pendingHints lists what may follow a pending chord prefix, so sequences like
+// s… and ,… are discoverable instead of flashing by.
+func (m model) pendingHints() (string, []keyHint) {
+	switch m.jobs.pending {
+	case 's':
+		return "sort", []keyHint{{"g", "group"}, {"i", "id"}, {"s", "state"}, {"t", "time"}, {"any", "cancel"}}
+	case 'g':
+		return "g", []keyHint{{"g", "top"}, {"any", "cancel"}}
+	case ',':
+		return ",", []keyHint{{"n", "toggle session tree"}}
+	}
+	return "", nil
+}
+
+// jobsHints are the context hints for the management screen, ordered by
+// usefulness: the ones that don't fit are dropped from the end.
+func (m model) jobsHints() []keyHint {
+	if m.jobs.helping {
+		return []keyHint{{"any", "close help"}}
+	}
+	if m.jobs.form.active || m.jobs.settings.active {
+		return []keyHint{{"tab", "next field"}, {"enter", "save"}, {"esc", "cancel"}}
+	}
+	if m.jobs.picker.active || m.jobs.tree.menu.active {
+		return []keyHint{{"j/k", "move"}, {"enter", "choose"}, {"esc", "close"}}
+	}
+	if m.jobs.tree.show && m.jobs.tree.focus {
+		return []keyHint{
+			{"j/k", "move"}, {"tab", "views"}, {"l/h", "fold"}, {"⏎", "open"},
+			{"m", "menu"}, {"e", "edit"}, {"n", "new"}, {"d", "delete"},
+			{"^w l", "jobs"}, {"A", "zoom"}, {"?", "help"}, {"q", "quit"},
+		}
+	}
+	if m.jobs.visual {
+		return []keyHint{{"j/k", "extend"}, {"x", "kill"}, {"r", "rerun"}, {"u", "urgent"}, {"d", "remove"}, {"esc", "cancel"}}
+	}
+	hints := []keyHint{
+		{"j/k", "move"}, {"tab", "views"}, {"⏎", "output"}, {"/", "filter"},
+		{":", "command"}, {"space", "select"}, {"s", "sort"}, {"x", "kill"},
+		{"r", "rerun"}, {"d", "remove"}, {"S", "sessions"}, {",n", "tree"},
+		{"?", "help"}, {"q", "quit"},
+	}
+	if len(m.jobs.tagged) > 0 {
+		hints = append([]keyHint{{"esc", "clear selection"}}, hints...)
+	}
+	return hints
+}
+
+// jobsStatusBar is the bottom row: the mode chip, what narrows the table (view,
+// filter, selection), the last message, and the hardware readout on the right.
+func (m model) jobsStatusBar(w int) string {
 	sessions, needYou := 0, 0
 	for _, n := range m.nodes {
 		sessions += len(n.sessions)
@@ -722,52 +823,46 @@ func (m model) jobsFooter(w int) string {
 			}
 		}
 	}
-	modeText, modeStyle := " MANAGE ", modeCommandStyle
-	if m.jobs.visual {
+	mode, modeStyle := " MANAGE ", chipStyle
+	switch {
+	case m.jobs.confirm.kind != confirmNone:
+		mode, modeStyle = " CONFIRM ", dangerChipStyle
+	case m.jobs.commanding:
+		mode, modeStyle = " COMMAND ", modeCommandStyle
+	case m.jobs.filtering:
+		mode, modeStyle = " FILTER ", modeCommandStyle
+	case m.jobs.visual:
 		lo, hi := m.visualRange()
-		modeText, modeStyle = fmt.Sprintf(" VISUAL %d ", hi-lo+1), modeInsertStyle
+		mode, modeStyle = fmt.Sprintf(" VISUAL %d ", hi-lo+1), modeInsertStyle
 	}
-	// The sort field/direction already shows as an arrow on the sorted column
-	// header, so it isn't repeated here — the left side stays just the mode
-	// plus transient context (selection, filter, last action).
-	left := []statusSegment{{text: modeText, style: modeStyle}}
+	val := func(s string) string { return statusValueStyle.Render(" " + s + " ") }
+
+	left := modeStyle.Render(mode) + statusPair("VIEW", val(m.jobs.tab.label()))
+	if needYou > 0 {
+		// The one count you are meant to act on gets the loudest chip.
+		left += " " + dangerChipStyle.Render(fmt.Sprintf(" %d need you ", needYou))
+	}
+	left += statusPair("SESS", val(fmt.Sprint(sessions)))
 	if n := len(m.jobs.tagged); n > 0 {
-		left = append(left, statusSegment{text: fmt.Sprintf(" sel %d ", n), style: modeInsertStyle})
+		left += statusPair("SEL", val(fmt.Sprint(n)))
 	}
 	if m.jobs.filter != "" {
-		left = append(left, statusSegment{text: fmt.Sprintf(" /%s ", m.jobs.filter), style: airlineInfo})
+		left += statusPair("FILTER", val("/"+shorten(m.jobs.filter, 24)))
 	}
-	if m.status != "" {
-		left = append(left, statusSegment{text: " " + shorten(m.status, 60) + " ", style: airlineInfo})
+	switch {
+	case m.status == "":
+		left += statusPair("MSG", val("Ready"))
+	case strings.HasPrefix(m.status, "error"):
+		left += " " + dangerChipStyle.Render(" ERR ") + val(shorten(m.status, 60))
+	default:
+		left += statusPair("MSG", val(shorten(m.status, 60)))
 	}
-	// Right side stays calm: activity counts appear only when non-zero, so an
-	// idle queue shows just the session count and the help pointer. Failures get
-	// their own red chip.
-	var right []statusSegment
-	// Sessions whose panes reported "waiting on you" or "errored" get the loudest
-	// chip on the bar: it is the one count you are meant to act on.
-	if needYou > 0 {
-		right = append(right, statusSegment{text: fmt.Sprintf(" %d need you ", needYou), style: airlineError})
+
+	right := ""
+	if room := w - lipgloss.Width(left) - 1; room > 0 {
+		right = m.renderHWBar(room)
 	}
-	if failed > 0 {
-		right = append(right, statusSegment{text: fmt.Sprintf(" fail %d ", failed), style: airlineError})
-	}
-	var counts []string
-	if running > 0 {
-		counts = append(counts, fmt.Sprintf("run %d", running))
-	}
-	if queued > 0 {
-		counts = append(counts, fmt.Sprintf("queue %d", queued))
-	}
-	if finished > 0 {
-		counts = append(counts, fmt.Sprintf("done %d", finished))
-	}
-	counts = append(counts, fmt.Sprintf("sess %d", sessions))
-	right = append(right,
-		statusSegment{text: " " + strings.Join(counts, " · ") + " ", style: airlineMuted},
-		statusSegment{text: " ? help ", style: airlineFocus},
-	)
-	return renderAirline(w, left, right)
+	return renderStatusBar(w, left, right)
 }
 
 // joinExact pads/truncates to exactly h lines of width w and joins them.
@@ -796,16 +891,7 @@ func shorten(s string, n int) string {
 	return truncateToWidth(s, n-1) + "…"
 }
 
-// jobsBoxTitle names the management box in its top border: the app, plus
-// whatever narrows what is on screen (an active filter, a tag selection), so
-// the frame answers "why am I not seeing everything?" without a second glance.
-func (m model) jobsBoxTitle() string {
-	title := " runic "
-	switch {
-	case m.jobs.filter != "":
-		title = fmt.Sprintf(" runic · /%s ", shorten(m.jobs.filter, 24))
-	case len(m.jobs.tagged) > 0:
-		title = fmt.Sprintf(" runic · %d selected ", len(m.jobs.tagged))
-	}
-	return title
+func (m model) jobsBordered(content string, inner int) string {
+	b := borderStyle.Render("│")
+	return b + fitToWidth(content, inner) + b
 }

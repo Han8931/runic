@@ -118,6 +118,10 @@ type jobsView struct {
 	sortMode sortMode
 	sortRev  bool // reverse the current sort
 
+	// tab is the state view the table shows (All, Running, …), rolled with
+	// Tab / Shift+Tab.
+	tab jobsTab
+
 	pending      byte // first key of a two-key motion: 'g' (gg), 's' (sort) or ',' (leader)
 	pendingTimer int
 
@@ -144,6 +148,7 @@ func (m model) openJobsView() (model, tea.Cmd) {
 	m.jobs = jobsView{
 		scopeAll: m.jobs.scopeAll,
 		filter:   m.jobs.filter,
+		tab:      m.jobs.tab,
 		tree: treePane{
 			show:      m.jobs.tree.show,
 			focus:     m.jobs.tree.show && m.jobs.tree.focus,
@@ -168,7 +173,7 @@ func (m model) collectJobs() []protocol.JobInfo {
 }
 
 // buildMgmtRows flattens every session's jobs into one flat table, applying the
-// active filter and the current sort. The list is jobs-only: empty sessions are
+// active tab, the filter and the current sort. The list is jobs-only: empty sessions are
 // browsed and opened from the tree sidebar, not shown here as placeholder rows.
 func (m model) buildMgmtRows() []mgmtRow {
 	var out []mgmtRow
@@ -176,6 +181,9 @@ func (m model) buildMgmtRows() []mgmtRow {
 		for _, session := range node.sessions {
 			jobs := filterJobs(node.jobs[session.Name], m.jobs.filter, "", true)
 			for _, j := range jobs {
+				if !m.jobs.tab.matches(j) {
+					continue
+				}
 				out = append(out, mgmtRow{
 					session: session.Name, group: node.group, job: j,
 				})
@@ -398,21 +406,70 @@ func clampScroll(offset, bodyH, total int) int {
 
 // --- layout math ----------------------------------------------------------
 
-func (m model) jobsBodyHeight() int {
-	footer := 1
-	input := 0
-	if m.jobs.filtering || m.jobs.commanding {
-		input = 1
-	}
+// jobsLayout is the geometry of the management screen: gorae-style bordered
+// panes — Sessions on the left, then the Jobs table with the Details pane
+// beneath it — above a hint bar and a status bar.
+type jobsLayout struct {
+	paneH    int  // height of the pane row (everything above the two bars)
+	overlay  bool // a modal (help, form, picker, menu) takes the whole row
+	showTree bool
+	zoom     bool // the Sessions pane fills the row (`A`)
+	treeW    int  // outer width of the Sessions pane
+	listX    int  // column where the Jobs pane starts
+	listW    int  // outer size of the Jobs pane
+	listH    int
+	// The Details pane sits under the table, as wide as it. detailH is 0 when
+	// the screen is too short for it.
+	detailW, detailH int
+}
+
+const (
+	paneGap     = 1                    // blank columns between panes
+	treeOuterW  = treePaneWidth + 2    // Sessions pane incl. its border
+	detailPaneH = jobsDetailHeight + 2 // Details pane under the table, incl. border
+)
+
+// jobsOverlay reports whether a modal owns the pane row.
+func (m model) jobsOverlay() bool {
+	return m.jobs.helping || m.jobs.form.active || m.jobs.settings.active ||
+		m.jobs.picker.active || m.jobs.tree.menu.active
+}
+
+func (m model) jobsLayout() jobsLayout {
+	w := m.width
+	l := jobsLayout{overlay: m.jobsOverlay()}
+	bottom := 2 // hint bar + status bar
 	if m.jobs.commanding {
 		// The tab-completion candidate strip sits under the command line.
-		input += m.completionHeight()
+		bottom += m.completionHeight()
 	}
-	boxH := m.height - footer - input - 1 // -1 for the hardware status bar
-	// The job-info pane is always shown beneath the table.
-	body := boxH - 3 - jobsDetailHeight // top border + header + bottom border
-	if body < 1 {
-		body = 1
+	l.paneH = max(3, m.height-bottom)
+	l.showTree = m.jobs.tree.show && !l.overlay && w >= 48
+	l.zoom = l.showTree && m.jobs.tree.zoom
+
+	rest := w
+	if l.showTree {
+		l.treeW = treeOuterW
+		if l.zoom {
+			l.treeW = w
+		}
+		rest = w - l.treeW - paneGap
+		l.listX = l.treeW + paneGap
 	}
-	return body
+	l.listW, l.listH = max(rest, 0), l.paneH
+	if l.overlay || l.zoom {
+		return l
+	}
+	// Only when the table keeps a usable number of rows above it.
+	if l.paneH-detailPaneH >= 8 {
+		l.detailW, l.detailH = l.listW, detailPaneH
+		l.listH = l.paneH - detailPaneH
+	}
+	return l
+}
+
+// jobsBodyHeight is the number of job rows the table shows: the Jobs pane minus
+// its border, the tab strip and the column header.
+func (m model) jobsBodyHeight() int {
+	return max(1, m.jobsLayout().listH-4)
 }

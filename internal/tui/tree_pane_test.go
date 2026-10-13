@@ -63,7 +63,8 @@ func TestTreeRowsAndFold(t *testing.T) {
 	}
 }
 
-// `,n` toggles the sidebar and focuses it; tab moves focus only when shown.
+// `,n` toggles the sidebar and focuses it; tab rolls the views rather than
+// moving focus, so the tree keeps it.
 func TestTreeToggleAndFocus(t *testing.T) {
 	m := model{viewMode: viewJobs}
 	m.nodes = buildTree([]string{"default"}, []protocol.SessionInfo{{Name: "default", Group: "default"}}, nil)
@@ -76,16 +77,14 @@ func TestTreeToggleAndFocus(t *testing.T) {
 	if !m.jobs.tree.show || !m.jobs.tree.focus {
 		t.Fatalf(",n should show the tree and focus it")
 	}
-	// tab hands focus back to the list, and again to the tree.
-	nm, _, done := m.handleTreeKey(keyNamed("tab"))
-	m = nm.(model)
-	if !done || m.jobs.tree.focus {
-		t.Fatalf("tab should move focus off the tree")
+	// tab is not a tree key any more: the jobs handler rolls the view instead.
+	if _, _, done := m.handleTreeKey(keyNamed("tab")); !done {
+		t.Fatalf("a focused tree swallows unbound keys")
 	}
-	nm, _, done = m.handleTreeKey(keyNamed("tab"))
+	nm, _ = m.handleJobsKey(keyNamed("tab"))
 	m = nm.(model)
-	if !done || !m.jobs.tree.focus {
-		t.Fatalf("tab should focus the shown tree again")
+	if !m.jobs.tree.focus || m.jobs.tab != tabRunning {
+		t.Fatalf("tab should roll the view (got %v) and leave tree focus alone", m.jobs.tab)
 	}
 	// Hiding clears focus — the leader chord works from anywhere, incl. tree focus.
 	nm, _ = m.handleJobsKey(keyRune(','))
@@ -94,10 +93,6 @@ func TestTreeToggleAndFocus(t *testing.T) {
 	m = nm.(model)
 	if m.jobs.tree.show || m.jobs.tree.focus {
 		t.Fatalf("second ,n should hide the tree and drop focus")
-	}
-	// tab with the tree hidden is not consumed (list may use it).
-	if _, _, done := m.handleTreeKey(keyNamed("tab")); done {
-		t.Fatalf("tab should not be consumed while the tree is hidden")
 	}
 }
 
