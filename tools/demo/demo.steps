@@ -1,0 +1,127 @@
+# Runic README demo.
+#
+# Act 1 — queue work from the shell
+# Act 2 — the management screen: views, the output pager, the command line
+# Act 3 — sessions, worktrees, panes, and agent attention
+
+delay 0.032
+gap 0.18
+wait 0.8
+
+marker queue
+run ru make build
+wait 0.35
+run ru -L tests make test
+wait 0.35
+run ru -L lint make lint
+wait 0.35
+run ru -L bench make bench
+wait 0.35
+run ru -L e2e make e2e
+wait 0.35
+run ru -L fuzz make fuzz
+wait 0.35
+run ru -L docs make docs
+wait 0.6
+run ru -l
+wait 2.5
+
+# --- the management screen -------------------------------------------------
+marker tui
+run ru
+wait 3.0
+
+# walk the table
+key j
+wait 0.6
+key j
+wait 0.6
+key j
+wait 1.4
+key k k k
+wait 1.0
+
+# roll through the job views: All, Running, Queued, Done, Failed
+marker views
+key tab
+wait 2.0
+key tab
+wait 2.0
+key tab
+wait 2.0
+key tab
+wait 1.0
+
+# the failed job is the only row in this view: open its output
+marker output
+key enter
+wait 3.5
+key q
+wait 1.2
+
+# back to All, then follow a running job's output live
+key tab
+wait 1.0
+key tab
+wait 1.2
+key j
+wait 0.8
+key enter
+wait 6.5
+key q
+wait 1.2
+
+# the command line completes as you type
+marker command
+key :
+wait 0.8
+type set sl
+wait 0.6
+key tab
+wait 1.2
+type 4
+wait 0.6
+key enter
+wait 2.0
+
+# --- sessions, worktrees, panes --------------------------------------------
+marker sessions
+key stab
+wait 1.2
+key S
+wait 1.8
+key n
+wait 1.2
+type agent
+wait 0.5
+key down
+type review
+wait 0.5
+key down
+type agent/api-review
+wait 0.8
+key enter
+wait 2.5
+key enter
+wait 3.0
+
+marker panes
+run git status -sb
+wait 2.0
+run ru mark waiting 'needs a decision on the API'
+wait 1.5
+key ctrl-b |
+wait 1.5
+run go test ./internal/store/
+wait 5.0
+key ctrl-b -
+wait 1.5
+run ru -l
+wait 2.5
+key ctrl-b d
+wait 3.5
+
+# the session that needs a decision floats up, and the status bar says so
+marker attention
+key g g
+wait 4.0

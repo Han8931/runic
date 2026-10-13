@@ -10,6 +10,10 @@ your jobs and shells running, while agents can report when they need your attent
 The command is `ru`. Run it without arguments to open the interface, or pass a
 command to queue a job. The daemon starts automatically on first use.
 
+<p align="center">
+  <img src="assets/runic_demo.gif" alt="Runic demo" width="800">
+</p>
+
 [Quick start](#quick-start) · [CLI reference](#usage) · [Terminal interface](#interactive-tui-ru) · [Coding agents](#managing-coding-agents) · [Configuration](#configuration)
 
 ## Features
