@@ -133,4 +133,7 @@ var (
 	jobsHeaderStyle     = lipgloss.NewStyle().Bold(true).Foreground(cFgBright).Background(cHeaderTint)
 	jobsDetailKeyStyle  = lipgloss.NewStyle().Foreground(cInfo)
 	jobsDetailRuleStyle = lipgloss.NewStyle().Foreground(cRule)
+	// jobsDetailTitleStyle is a detail-panel section heading; cRule is far too
+	// faint to carry words.
+	jobsDetailTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(cFgMuted)
 )

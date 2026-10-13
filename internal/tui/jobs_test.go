@@ -380,6 +380,24 @@ func TestJobsDetailPaneAlwaysShown(t *testing.T) {
 	}
 }
 
+// The detail pane's section heading is a readable title followed by a rule
+// that fills the rest of the line exactly, including when the pane is too
+// narrow for the title itself.
+func TestJobsDetailHeadingWidth(t *testing.T) {
+	rows := []protocol.JobInfo{{ID: 8, Command: "go vet ./...", State: protocol.StateRunning}}
+	m := modelWithRows(rows, 0)
+	for _, inner := range []int{60, 14, 5} {
+		head := m.jobsDetailLines(jobsDetailHeight, inner)[0]
+		if w := lipgloss.Width(head); w != inner {
+			t.Errorf("inner=%d: heading width %d: %q", inner, w, stripAnsi(head))
+		}
+	}
+	head := stripAnsi(m.jobsDetailLines(jobsDetailHeight, 60)[0])
+	if !strings.HasPrefix(head, " job details ─") {
+		t.Errorf("heading should be the title then the rule: %q", head)
+	}
+}
+
 // `D` clears all finished jobs immediately, with no confirmation prompt.
 func TestJobsDeleteAllFinishedNoConfirm(t *testing.T) {
 	rows := []protocol.JobInfo{{ID: 1, State: protocol.StateQueued}, {ID: 2, State: protocol.StateFinished}}

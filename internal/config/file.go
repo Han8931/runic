@@ -37,9 +37,10 @@ type Key struct {
 	Default   string
 	Desc      string
 	IsInt     bool
-	MinInt    int  // clamp floor, only when IsInt
-	IsPath    bool // expand a leading ~/
-	Runtime   bool // may be overridden by the runtime state file
+	MinInt    int      // clamp floor, only when IsInt
+	IsPath    bool     // expand a leading ~/
+	Choices   []string // allowed values, when the setting is an enumeration
+	Runtime   bool     // may be overridden by the runtime state file
 }
 
 // Keys lists every setting, in display order.
@@ -60,6 +61,22 @@ var Keys = []Key{
 		Desc: "command run when a pane's attention state changes (see 'ru mark')"},
 	{Name: "save_list", EnvVar: "RUNIC_SAVELIST", LegacyEnv: "TS_SAVELIST", Default: "",
 		Desc: "queue snapshot file ('none' disables; default: state dir)", IsPath: true},
+	{Name: "theme", EnvVar: "RUNIC_THEME", Default: "auto",
+		Desc: "TUI palette: auto (ask the terminal), light, or dark", Choices: []string{"auto", "light", "dark"}},
+}
+
+// ValidChoice reports whether v is allowed for k. Keys without Choices accept
+// anything; enumerations match case-insensitively.
+func (k Key) ValidChoice(v string) bool {
+	if len(k.Choices) == 0 {
+		return true
+	}
+	for _, c := range k.Choices {
+		if strings.EqualFold(strings.TrimSpace(v), c) {
+			return true
+		}
+	}
+	return false
 }
 
 // KeyByName returns the Key metadata for a config name.
@@ -212,6 +229,13 @@ func loadSettings() ([]Setting, []string) {
 					n = k.MinInt
 				}
 				raw = strconv.Itoa(n)
+			}
+			if len(k.Choices) > 0 {
+				if !k.ValidChoice(raw) {
+					warnings = append(warnings, fmt.Sprintf("%s: invalid %s %q (want %s; keeping %s)", origin, k.Name, raw, strings.Join(k.Choices, "|"), s.Value))
+					return
+				}
+				raw = strings.ToLower(strings.TrimSpace(raw))
 			}
 			if k.IsPath {
 				raw = expandTilde(raw)

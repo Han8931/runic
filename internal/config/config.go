@@ -15,6 +15,7 @@ type Config struct {
 	SaveList    string
 	Slots       int
 	Logdir      string // job output directory; empty means TmpDir
+	Theme       string // TUI palette: "auto", "light" or "dark"
 	TmpDir      string
 }
 
@@ -52,6 +53,7 @@ func LoadDetailed() (*Config, []Setting, []string) {
 		SaveList:    get("save_list"),
 		Slots:       atoi(get("slots"), 1),
 		Logdir:      get("logdir"),
+		Theme:       get("theme"),
 	}
 	if saveListDisabled(c.SaveList) {
 		c.SaveList = ""

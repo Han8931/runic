@@ -222,3 +222,24 @@ func TestUnknownFileKeyWarns(t *testing.T) {
 		t.Errorf("expected unknown-key warning, got %v", warnings)
 	}
 }
+
+func TestThemeSetting(t *testing.T) {
+	cfgDir, _ := isolate(t)
+	if got := Load().Theme; got != "auto" {
+		t.Errorf("default theme = %q, want auto", got)
+	}
+
+	writeConfigFile(t, cfgDir, "theme = Light\n")
+	if got := Load().Theme; got != "light" {
+		t.Errorf("file theme = %q, want light", got)
+	}
+
+	t.Setenv("RUNIC_THEME", "sepia")
+	c, _, warnings := LoadDetailed()
+	if c.Theme != "light" {
+		t.Errorf("invalid env theme should keep file value, got %q", c.Theme)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "theme") {
+		t.Errorf("expected a theme warning, got %v", warnings)
+	}
+}

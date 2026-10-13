@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/han/runic/internal/client"
+	"github.com/han/runic/internal/config"
 	"github.com/han/runic/internal/protocol"
 	"github.com/han/runic/internal/sysmon"
 )
@@ -396,6 +398,9 @@ func Run() error { return run(false) }
 func RunJobs() error { return run(true) }
 
 func run(jobsOnly bool) error {
+	cfg, _, warnings := config.LoadDetailed()
+	applyTheme(cfg.Theme)
+
 	// Home is the full-screen management view. No terminal session is attached
 	// until the user opens one from the list, so no shell is built here — this
 	// also means running `ru` from inside an existing runic pane never
@@ -404,6 +409,13 @@ func run(jobsOnly bool) error {
 	m.activeSession = ""
 	m.jobsOnly = jobsOnly
 	m, _ = m.openJobsView()
+	// A rejected theme otherwise only shows up in `ru config list`; the alt
+	// screen would hide a stderr line, so say it in the status bar instead.
+	for _, w := range warnings {
+		if strings.Contains(w, "invalid theme ") {
+			m.status = w
+		}
+	}
 
 	// Register as the daemon's one active TUI. If another `ru` is already
 	// attached, the daemon detaches it in our favor; if we get displaced

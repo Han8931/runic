@@ -439,6 +439,7 @@ ru config path
 | `on_finish` | `RUNIC_ONFINISH` | Command to run on job completion | — |
 | `on_attention` | `RUNIC_ONATTENTION` | Command to run when a pane's attention state changes | — |
 | `save_list` | `RUNIC_SAVELIST` | Queue snapshot file (`none` disables) | `~/.local/state/runic/queue.json` |
+| `theme` | `RUNIC_THEME` | TUI palette: `auto` asks the terminal for its background (works inside tmux), or force `light` / `dark` | `auto` |
 
 `RUNIC_SESSION` (environment only) sets the default session when `-g` is
 omitted; the TUI sets it inside session shells. Legacy `TS_*` names are still

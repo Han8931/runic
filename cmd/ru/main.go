@@ -587,6 +587,12 @@ func doConfig(cmd *cli.Command) error {
 				return fmt.Errorf("%s must be at least %d", key, k.MinInt)
 			}
 		}
+		if !k.ValidChoice(value) {
+			return fmt.Errorf("%s must be one of %s, got %q", key, strings.Join(k.Choices, ", "), value)
+		}
+		if len(k.Choices) > 0 {
+			value = strings.ToLower(strings.TrimSpace(value))
+		}
 		if err := config.SetFileValue(key, value); err != nil {
 			return err
 		}
@@ -643,6 +649,8 @@ func applyConfigLive(key, value string) {
 		if err := client.SetLogdir(value); err == nil {
 			fmt.Fprintln(os.Stderr, "ru: applied to the running daemon")
 		}
+	case "theme":
+		fmt.Fprintln(os.Stderr, "ru: takes effect the next time ru starts")
 	}
 }
 

@@ -560,9 +560,14 @@ func jobStateCounts(jobs []protocol.JobInfo) (running, queued, finished, failed 
 
 func (m model) jobsDetailLines(maxLines, inner int) []string {
 	out := make([]string, 0, maxLines)
+	// A section heading is a word, not a hairline: the title takes readable
+	// text color and only the trailing dashes stay at rule strength.
 	rule := func(title string) {
-		r := title + strings.Repeat("─", max(0, inner-lipgloss.Width(title)))
-		out = append(out, jobsDetailRuleStyle.Render(fitToWidth(r, inner)))
+		if lipgloss.Width(title) > inner {
+			title = truncateToWidth(title, inner)
+		}
+		dashes := strings.Repeat("─", max(0, inner-lipgloss.Width(title)))
+		out = append(out, jobsDetailTitleStyle.Render(title)+jobsDetailRuleStyle.Render(dashes))
 	}
 	// The panel follows the focus: driving the sidebar, it describes the session
 	// under the cursor (branch, isolation, what its agent last said), which is
