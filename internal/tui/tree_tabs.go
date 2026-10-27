@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -92,20 +93,26 @@ func (m model) agentRows() []treeRow {
 			continue
 		}
 		rows = append(rows, treeRow{
-			kind:      treeAgent,
-			group:     m.sessionGroup(a.Session),
-			session:   a.Session,
-			pane:      a.Pane,
-			attention: a.Attention,
-			note:      a.Note,
-			since:     a.Since,
-			seen:      a.Seen,
+			kind:       treeAgent,
+			group:      m.sessionGroup(a.Session),
+			session:    a.Session,
+			pane:       a.Pane,
+			attention:  a.Attention,
+			note:       a.Note,
+			since:      a.Since,
+			seen:       a.Seen,
+			lastOutput: a.LastOutput,
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if ra, rb := attentionRank(a.attention, a.seen), attentionRank(b.attention, b.seen); ra != rb {
 			return ra < rb
+		}
+		// Within the working bucket, one that has gone quiet comes first: it is
+		// the one that might not be working at all.
+		if qa, qb := agentStalled(a), agentStalled(b); qa != qb {
+			return qa
 		}
 		// Zero Since (never reported) sorts last within its bucket; it carries
 		// no age to compare.
@@ -122,6 +129,33 @@ func (m model) agentRows() []treeRow {
 		return a.pane < b.pane
 	})
 	return rows
+}
+
+// agentStallAfter is how long a pane may claim to be working while producing no
+// output before the row says so. Long enough that a slow build or a model
+// thinking does not trip it; short enough that a crashed agent does not sit
+// there looking busy for the rest of the afternoon.
+const agentStallAfter = 5 * time.Minute
+
+// agentStalled reports whether a working pane has gone suspiciously quiet.
+//
+// This is derived from the byte stream, not reported by the agent, so it is
+// deliberately phrased as a doubt rather than a failure: an agent that is
+// genuinely wedged cannot tell you, and one that is merely slow must not be
+// branded broken.
+func agentStalled(r treeRow) bool {
+	if r.attention != protocol.AttentionWorking || r.lastOutput.IsZero() {
+		return false
+	}
+	return time.Since(r.lastOutput) >= agentStallAfter
+}
+
+// agentQuietFor is how long a pane has produced no output.
+func agentQuietFor(r treeRow) time.Duration {
+	if r.lastOutput.IsZero() {
+		return 0
+	}
+	return time.Since(r.lastOutput)
 }
 
 // attentionRank orders the states by how much they want your attention.
@@ -284,15 +318,16 @@ func (m model) agentChip(r treeRow) (string, lipgloss.Style) {
 	if !reported {
 		return "", treeSummaryStyle
 	}
+	// A working agent that has stopped producing output reports the silence
+	// instead of its age: how long it has *claimed* to work matters less than
+	// how long it has had nothing to say.
+	if agentStalled(r) {
+		return "QUIET " + durationCompact(agentQuietFor(r).Round(time.Minute)), attnWaitingStyle
+	}
 	if r.since.IsZero() {
 		return badge, style
 	}
-	// The age belongs next to the state it is the age *of*. A working agent
-	// reports it quietly — useful for spotting one that is stuck, not a thing
-	// to interrupt for — while anything unresolved keeps its own color.
-	if r.attention == protocol.AttentionWorking {
-		return badge + " " + waitAge(r.since), style
-	}
+	// The age belongs next to the state it is the age *of*.
 	return badge + " " + waitAge(r.since), style
 }
 

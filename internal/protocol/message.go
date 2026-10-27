@@ -138,6 +138,12 @@ const (
 	// because triaging a dashboard should not require visiting every pane on it.
 	// Answered with MsgActionOK.
 	MsgAck
+	// MsgTerminalTail asks for the last few lines a pane printed, so a client
+	// can show what an agent actually did without attaching to it. The daemon
+	// already keeps a backlog ring per pane to replay on attach; this reads the
+	// tail of it.
+	MsgTerminalTail
+	MsgTerminalTailOK
 )
 
 type Msg struct {
@@ -367,6 +373,21 @@ type TerminalInfo struct {
 	LastOutput time.Time
 }
 
+// PayloadTerminalTail requests the last Lines lines of a pane's output.
+type PayloadTerminalTail struct {
+	Session string
+	Pane    string
+	Lines   int
+}
+
+// PayloadTerminalTailText carries the requested tail, already stripped of
+// escape sequences and split into lines by the daemon — the client has no
+// terminal emulator for a pane it is not attached to, and every client would
+// otherwise need the same cleanup.
+type PayloadTerminalTailText struct {
+	Lines []string
+}
+
 // PayloadAck names the pane whose alert is being acknowledged. An empty Pane
 // acknowledges every live pane in the session, which is how you clear a session
 // you have just dealt with in one gesture.
@@ -430,6 +451,9 @@ func init() {
 	gob.Register(PayloadTerminalSetLayout{})
 	gob.Register(PayloadTerminalListAll{})
 	gob.Register(PayloadMark{})
+	gob.Register(PayloadAck{})
+	gob.Register(PayloadTerminalTail{})
+	gob.Register(PayloadTerminalTailText{})
 }
 
 func Send(w io.Writer, msg *Msg) error {

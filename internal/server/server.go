@@ -280,6 +280,8 @@ func (s *Server) dispatch(ctx context.Context, conn net.Conn, msg *protocol.Msg)
 		return s.handleMark(conn, msg)
 	case protocol.MsgAck:
 		return s.handleAck(conn, msg)
+	case protocol.MsgTerminalTail:
+		return s.handleTerminalTail(conn, msg)
 	case protocol.MsgTUIAttach:
 		return s.handleTUIAttach(conn)
 	case protocol.MsgReset:

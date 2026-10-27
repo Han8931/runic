@@ -308,3 +308,101 @@ func TestAgentSessionSurvivesRename(t *testing.T) {
 	}
 	t.Fatal("renamed session missing from the tree")
 }
+
+// The snippet, end to end: what a pane printed reaches a client that is not
+// attached to it. "done" on its own answers nothing — the Stop hook fires as
+// the agent exits and carries no message — so the only way to find out what an
+// agent did was to attach and scroll.
+func TestPaneTailOverTheWire(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "talkative")
+	body := "#!/bin/sh\nprintf 'first\\nsecond\\nthird\\n'\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+	t.Setenv("RUNIC_AGENTS", "talker="+script)
+	startDaemon(t)
+
+	if err := client.SessionCreateSpec(client.SessionSpec{Name: "s", Agent: "talker"}); err != nil {
+		t.Fatalf("SessionCreateSpec: %v", err)
+	}
+	pane, err := client.OpenTerminal("s", 80, 24)
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+
+	var lines []string
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		lines, err = client.TerminalTail("s", pane, 5)
+		if err == nil && strings.Contains(strings.Join(lines, "\n"), "third") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("TerminalTail: %v", err)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"first", "second", "third"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("tail missing %q:\n%s", want, joined)
+		}
+	}
+	// No escape sequences survive: the shell's prompt markers and any color are
+	// control traffic, not something to show in a summary.
+	if strings.Contains(joined, "\x1b") {
+		t.Errorf("tail still carries escape sequences: %q", joined)
+	}
+
+	if _, err := client.TerminalTail("s", "ghost", 5); err == nil {
+		t.Error("a pane that does not exist should be an error, not empty output")
+	}
+}
+
+// Acknowledging over the wire. This path was unregistered with gob when it was
+// written, so it would have failed the moment anyone pressed the key — the
+// encode error only shows up at runtime.
+func TestAckOverTheWire(t *testing.T) {
+	startDaemon(t)
+	if err := client.SessionCreate("s"); err != nil {
+		t.Fatalf("SessionCreate: %v", err)
+	}
+	pane, err := client.OpenTerminal("s", 80, 24)
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+	if err := client.Mark("s", pane, protocol.AttentionWaiting, "which schema?"); err != nil {
+		t.Fatalf("Mark: %v", err)
+	}
+
+	if err := client.Ack("s", pane); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+
+	terms, err := client.ListTerminals()
+	if err != nil {
+		t.Fatalf("ListTerminals: %v", err)
+	}
+	for _, term := range terms {
+		if term.Session != "s" || term.Pane != pane {
+			continue
+		}
+		// Acknowledged, not answered: the question is still the most useful
+		// thing on the row.
+		if term.Attention != protocol.AttentionWaiting {
+			t.Errorf("attention = %v, want waiting preserved", term.Attention)
+		}
+		if term.Note != "which schema?" {
+			t.Errorf("note = %q, want it kept", term.Note)
+		}
+		if !term.Seen {
+			t.Error("the alert should be marked seen")
+		}
+		if protocol.Unresolved(term.Attention, term.Seen) {
+			t.Error("an acknowledged pane should stop counting as needing you")
+		}
+		return
+	}
+	t.Fatal("pane missing from ListTerminals")
+}

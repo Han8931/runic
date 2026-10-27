@@ -95,6 +95,8 @@ type model struct {
 	// against stacking timers. See spinner.go.
 	spinnerFrame int
 	spinnerOn    bool
+	// snippet caches the selected agent's output tail; see snippet.go.
+	snippet agentSnippetState
 	// paneZoom gives the focused pane the whole region, tmux-style. A
 	// full-screen agent or a wall of test output is unreadable in a quarter of
 	// the screen, and splitting to read something then un-splitting to get the
@@ -326,6 +328,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(clearScreenCmd(), sampleHWCmd(m.hwMon), mouseCmd, spinCmd)
 		}
 		m.refreshTreeRows()
+		tailCmd := (&m).requestAgentSnippet()
+		if tailCmd != nil {
+			spinCmd = tea.Batch(spinCmd, tailCmd)
+		}
 		if m.jobs.session != "" && !m.sessionExists(m.jobs.session) {
 			m.jobs.session = ""
 		}
@@ -340,6 +346,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pagerLoadedMsg:
 		return m.applyPagerLoaded(msg), nil
+
+	case agentTailMsg:
+		(&m).applyAgentTail(msg)
+		return m, nil
 
 	case spinnerTickMsg:
 		m.spinnerFrame++

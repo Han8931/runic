@@ -89,6 +89,10 @@ type treeRow struct {
 	// rows so the row can say which agent it is rather than repeating the
 	// session name already printed above it.
 	agentKind string
+	// lastOutput is when the pane last produced any output. An agent claiming
+	// to work while printing nothing is the one failure it cannot report
+	// itself — being wedged is not a state anything gets to announce.
+	lastOutput time.Time
 	// worktree/branch are set on a session row isolated in its own git worktree.
 	worktree string
 	branch   string
@@ -241,20 +245,26 @@ func (m model) handleTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		t.focus = false
-	case "j", "down":
-		if t.cursor < len(t.rows)-1 {
-			t.cursor++
+	case "j", "down", "k", "up", "g", "G":
+		switch msg.String() {
+		case "j", "down":
+			if t.cursor < len(t.rows)-1 {
+				t.cursor++
+			}
+		case "k", "up":
+			if t.cursor > 0 {
+				t.cursor--
+			}
+		case "g":
+			t.cursor = 0
+		case "G":
+			if len(t.rows) > 0 {
+				t.cursor = len(t.rows) - 1
+			}
 		}
-	case "k", "up":
-		if t.cursor > 0 {
-			t.cursor--
-		}
-	case "g":
-		t.cursor = 0
-	case "G":
-		if len(t.rows) > 0 {
-			t.cursor = len(t.rows) - 1
-		}
+		// Fetch the newly selected agent's output now rather than waiting up to
+		// a second for the next poll to notice the cursor moved.
+		return m, (&m).requestAgentSnippet(), true
 	case "l", "o", " ":
 		(&m).treeToggleFold()
 	case "h":

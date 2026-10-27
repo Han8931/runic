@@ -747,34 +747,58 @@ func (m model) sessionDetailLines(inner int) ([]string, string, bool) {
 		}, " space ", true
 	}
 	if r.kind == treeAgent {
-		// An agent row carries no job counts and no worktree of its own, so it
-		// gets its own panel rather than the session one with empty fields: the
-		// pane, what it last said, and the session it would open.
+		// Ordered by what you need in order to decide what to do: what it is
+		// doing, what it asked, what it printed, and only then the provenance.
+		// The old panel led with the session and pane — true, but you already
+		// know which row you are on — and truncated the question to one line,
+		// which is the one thing on the panel you cannot act without.
 		state := agentStateWord(r.attention, r.seen)
 		if !r.since.IsZero() && r.attention != protocol.AttentionNone {
-			state += " for " + waitAge(r.since)
+			state += " · " + waitAge(r.since)
 		}
-		lines := []string{
-			field("Agent", r.session+" · "+r.pane),
-			field("State", state),
+		if agentStalled(r) {
+			state += " · quiet for " + durationCompact(agentQuietFor(r).Round(time.Minute))
 		}
+		lines := []string{field("State", state)}
+
+		// The request, wrapped. A clipped question reads as a different, shorter
+		// question.
 		if r.note != "" {
-			lines = append(lines, field("Said", r.note))
+			lines = append(lines, wrapField(inner, "Asked", r.note)...)
+		}
+		// What it printed, for when "done" is all it said. Fetched per selection
+		// rather than on every poll; see agentTailMsg.
+		if snippet := m.agentSnippet(r); len(snippet) > 0 {
+			lines = append(lines, field("Output", ""))
+			for _, l := range snippet {
+				// Tabs measure as one column and render as several, so they have
+				// to go before the width is budgeted.
+				l = strings.ReplaceAll(l, "\t", "    ")
+				lines = append(lines, fitToWidth("  "+treeSummaryStyle.Render(truncateToWidth(l, max(8, inner-4))), inner))
+			}
+		}
+
+		// Next action, as keys you can actually press from here.
+		next := "⏎ attach"
+		if protocol.Unresolved(r.attention, r.seen) {
+			next += " · ! acknowledge"
+		}
+		lines = append(lines, field("Do", next))
+
+		// Provenance last.
+		if s, ok := m.sessionInfo(r.session); ok && s.Agent != "" {
+			lines = append(lines, field("Agent", s.Agent+" in "+r.session+" · "+r.pane))
+		} else {
+			lines = append(lines, field("Agent", r.session+" · "+r.pane))
 		}
 		lines = append(lines, field("Group", r.group))
-		if s, ok := m.sessionInfo(r.session); ok {
-			if s.Agent != "" {
-				lines = append(lines, field("Kind", s.Agent))
-			}
-			if s.Branch != "" {
-				lines = append(lines, field("Branch", s.Branch))
-			}
+		if s, ok := m.sessionInfo(r.session); ok && s.Branch != "" {
+			lines = append(lines, field("Branch", s.Branch))
 		}
-		open := "⏎ attaches, which clears a waiting state"
-		if r.attention == protocol.AttentionError {
-			open = "⏎ attaches; the error stays until  ru mark done"
+		if !r.lastOutput.IsZero() {
+			lines = append(lines, field("Last output", waitAge(r.lastOutput)+" ago"))
 		}
-		return append(lines, field("Open", open)), " agent ", true
+		return lines, " agent ", true
 	}
 	lines := []string{
 		field("Session", r.session),
@@ -1166,4 +1190,45 @@ func (m model) helpViewport(content []string, bodyH, boxInner, inner int) []stri
 // helpViewport against the real list.
 func (m *model) helpScroll(delta int) {
 	m.jobs.help.offset = max(0, m.jobs.help.offset+delta)
+}
+
+// wrapField renders a labelled value over as many lines as it needs, with the
+// continuation lines aligned under the value. A truncated question reads as a
+// different, shorter question, which is the one thing on an agent's panel you
+// cannot act without.
+func wrapField(inner int, label, value string) []string {
+	const labelW = 12
+	valueW := max(16, inner-labelW-2)
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return nil
+	}
+	var out []string
+	line := ""
+	flush := func(head string) {
+		pad := strings.Repeat(" ", labelW)
+		if head != "" {
+			pad = fmt.Sprintf("%-*s", labelW, head+":")
+		}
+		// Padded to the panel width, like the single-line fields: a short line
+		// leaves the panel's background ragged against the border.
+		out = append(out, fitToWidth(jobsDetailKeyStyle.Render(pad)+treeSummaryStyle.Render(line), inner))
+	}
+	head := label
+	for _, w := range words {
+		candidate := w
+		if line != "" {
+			candidate = line + " " + w
+		}
+		if lipgloss.Width(candidate) > valueW && line != "" {
+			flush(head)
+			head, line = "", w
+			continue
+		}
+		line = candidate
+	}
+	if line != "" {
+		flush(head)
+	}
+	return out
 }

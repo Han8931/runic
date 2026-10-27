@@ -47,6 +47,34 @@ func Ack(session, pane string) error {
 	return recvOK(c)
 }
 
+// TerminalTail returns the last n lines a pane printed. Used to show what an
+// agent did without attaching to it.
+func TerminalTail(session, pane string, n int) ([]string, error) {
+	c, err := Connect()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	if err := c.Send(&protocol.Msg{
+		Type:    protocol.MsgTerminalTail,
+		Payload: protocol.PayloadTerminalTail{Session: session, Pane: pane, Lines: n},
+	}); err != nil {
+		return nil, err
+	}
+	msg, err := c.Recv()
+	if err != nil {
+		return nil, err
+	}
+	if msg.Type == protocol.MsgError {
+		return nil, recvError(msg)
+	}
+	payload, pErr := protocol.PayloadAs[protocol.PayloadTerminalTailText](msg)
+	if pErr != nil {
+		return nil, pErr
+	}
+	return payload.Lines, nil
+}
+
 // MarkTarget resolves which pane a `ru mark` applies to. Explicit arguments win;
 // otherwise it uses the RUNIC_SESSION / RUNIC_PANE pair the daemon puts in every
 // pane's environment, which is what lets an agent's hook report its own state

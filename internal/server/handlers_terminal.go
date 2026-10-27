@@ -135,3 +135,19 @@ func (s *Server) handleTerminalListAll(conn net.Conn) bool {
 		Payload: protocol.PayloadTerminalListAll{Terminals: s.terminals.ListAll()},
 	})
 }
+
+// handleTerminalTail answers with the last lines a pane printed.
+func (s *Server) handleTerminalTail(conn net.Conn, msg *protocol.Msg) bool {
+	payload, err := protocol.PayloadAs[protocol.PayloadTerminalTail](msg)
+	if err != nil {
+		return s.sendError(conn, err.Error())
+	}
+	lines, ok := s.terminals.Tail(payload.Session, payload.Pane, payload.Lines)
+	if !ok {
+		return s.sendError(conn, "no live pane for that session and pane")
+	}
+	return s.sendMsg(conn, &protocol.Msg{
+		Type:    protocol.MsgTerminalTailOK,
+		Payload: protocol.PayloadTerminalTailText{Lines: lines},
+	})
+}

@@ -13,4 +13,6 @@ package protocol
 // 13: agent lifecycle — AgentStarted on SessionInfo, LastOutput on TerminalInfo,
 // and MsgAck — so the Agents view can report an agent that exited or has gone
 // quiet, and acknowledge one without attaching to it.
-const ProtocolVersion = 13
+// 14: MsgTerminalTail — the last lines a pane printed, so a finished agent can
+// say what it did without being attached to.
+const ProtocolVersion = 14
