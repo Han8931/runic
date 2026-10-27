@@ -38,10 +38,6 @@ var (
 	cAmber  = lipgloss.AdaptiveColor{Dark: "#E6C060", Light: "#765000"} // queued / waiting
 	cRed    = lipgloss.AdaptiveColor{Dark: "#F08B8B", Light: "#A12532"} // error / failed
 	cInfo   = lipgloss.AdaptiveColor{Dark: "#A6BDE0", Light: "#345581"} // detail keys, labels
-	// Violet is the one hue reserved for *what a row is* rather than how it is
-	// doing: an agent. The four hues above all mean state, so reusing one would
-	// make "this is an agent" and "this agent is fine" the same signal.
-	cViolet = lipgloss.AdaptiveColor{Dark: "#C4A2F5", Light: "#5B2A9D"} // agent rows
 
 	// Badges use contrasting ink; pale selections have their own dark text.
 	cInk      = lipgloss.AdaptiveColor{Dark: "#1A1D22", Light: "#FFFFFF"}
@@ -67,16 +63,15 @@ var (
 	folderStyle      = lipgloss.NewStyle().Foreground(cAmber)
 	modalTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	modalActiveStyle = lipgloss.NewStyle().Bold(true).Foreground(cFgBright)
+	// treeSummaryStyle is also what a calm agent row is drawn in. The tree's
+	// hierarchy is carried by weight — group bold, session bright, agent faint,
+	// job in its state color — rather than by giving "is an agent" a hue of its
+	// own. Spending color on a row's *category* leaves nothing louder for its
+	// urgency, which is the only thing worth interrupting you for.
 	treeSummaryStyle = lipgloss.NewStyle().Foreground(cFgFaint)
-	// Agent rows get their own hue so a session and the agent inside it are not
-	// two near-identical lines. Shape distinguishes them too (see renderTreeRow:
-	// a session leads with a fold mark, an agent with ◆), because color alone
-	// fails a colourblind reader and a terminal with a thin palette.
-	agentStyle     = lipgloss.NewStyle().Foreground(cViolet)
-	agentDimStyle  = lipgloss.NewStyle().Foreground(cViolet).Faint(true)
-	treeEmptyStyle = lipgloss.NewStyle().Italic(true).Foreground(cFgDim)
-	treePaneStyle  = lipgloss.NewStyle().Background(cPanelBg)
-	cursorStyle    = lipgloss.NewStyle().Foreground(cInk).Background(cCursorBg)
+	treeEmptyStyle   = lipgloss.NewStyle().Italic(true).Foreground(cFgDim)
+	treePaneStyle    = lipgloss.NewStyle().Background(cPanelBg)
+	cursorStyle      = lipgloss.NewStyle().Foreground(cInk).Background(cCursorBg)
 	// inputCursorStyle is the text-input caret: a maximum-contrast solid block
 	// (white in dark mode, near-black in light). NOTE: bubbles' cursor.View
 	// applies Reverse(true) on top of this style, swapping fg/bg at render

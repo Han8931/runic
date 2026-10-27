@@ -97,8 +97,9 @@ func TestSessionWithOnlyAgentsIsExpandable(t *testing.T) {
 	t.Fatal("no build session row")
 }
 
-// The whole point of the change: an agent row must not look like a session row.
-// Shape carries it, so this holds even where color does not survive.
+// An agent row must not look like a session row. The distinction is structural
+// now that the geometric markers are gone: a session carries a fold mark and
+// its own name, an agent sits a level deeper and is named by its kind.
 func TestAgentRowsAreDistinctFromSessions(t *testing.T) {
 	m := sideTabsModel()
 	m.jobs.tree.tab = sideSpaces
@@ -117,20 +118,42 @@ func TestAgentRowsAreDistinctFromSessions(t *testing.T) {
 	if agentText == "" || sessionText == "" {
 		t.Fatal("expected both an agent row and a session row")
 	}
-	if !strings.Contains(agentText, "◆") {
-		t.Errorf("an agent row should be marked ◆: %q", agentText)
+	// The retired vocabulary must not come back.
+	for _, glyph := range []string{"◆", "●", "◐", "×", "⊕"} {
+		for _, line := range []string{agentText, sessionText} {
+			if strings.Contains(line, glyph) {
+				t.Errorf("%q is a retired glyph, found in %q", glyph, line)
+			}
+		}
 	}
-	if strings.Contains(sessionText, "◆") {
-		t.Errorf("a session row must not wear the agent marker: %q", sessionText)
+	// The agent names what it is; the session names itself.
+	if !strings.Contains(agentText, "agent") && !strings.Contains(agentText, "claude") {
+		t.Errorf("an agent row should be named by its kind: %q", agentText)
 	}
-	// The nested row names the agent, not the session it already sits under.
-	if !strings.Contains(agentText, "claude") && !strings.Contains(agentText, "agent") {
-		t.Errorf("an agent row should name its kind: %q", agentText)
+	if !strings.Contains(sessionText, "build") {
+		t.Errorf("a session row should carry its name: %q", sessionText)
+	}
+	// And it sits deeper than its session.
+	if indent(agentText) <= indent(sessionText) {
+		t.Errorf("the agent row should be indented under its session:\n%q\n%q", sessionText, agentText)
 	}
 }
 
-// Color backs the shape up: a calm agent is violet rather than the session
-// foreground, and an agent needing you takes its attention color.
+// indent counts leading spaces after the cursor gutter.
+func indent(line string) int {
+	n := 0
+	for _, r := range line[1:] {
+		if r != ' ' {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// Color is spent on urgency alone: a calm agent is faint like any other detail,
+// and only one that needs you takes a loud hue. Giving "is an agent" its own
+// color left nothing louder for "this agent is stuck".
 func TestAgentRowColors(t *testing.T) {
 	orig := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -159,11 +182,12 @@ func TestAgentRowColors(t *testing.T) {
 		seen      bool
 		want      lipgloss.TerminalColor
 	}{
-		{"working is violet — an agent, and calm", protocol.AttentionWorking, false, cViolet},
+		{"working is faint — an agent, and calm", protocol.AttentionWorking, false, cFgFaint},
 		{"waiting takes its attention color", protocol.AttentionWaiting, false, cAmber},
 		{"errored is red", protocol.AttentionError, false, cRed},
-		{"an acknowledged error stays red", protocol.AttentionError, true, cRed},
-		{"idle is violet, quietly", protocol.AttentionIdle, false, cViolet},
+		// Acknowledged: still true, no longer news, so it stops shouting.
+		{"an acknowledged error goes quiet", protocol.AttentionError, true, cFgFaint},
+		{"idle is faint too", protocol.AttentionIdle, false, cFgFaint},
 	}
 	for _, c := range cases {
 		want := rgb(c.want)
@@ -173,33 +197,28 @@ func TestAgentRowColors(t *testing.T) {
 	}
 }
 
-// The flat Agents tab keeps the state glyphs instead: every row there is an
-// agent, so the column is better spent on something that survives a terminal
-// with no color.
-func TestFlatAgentTabKeepsStateGlyphs(t *testing.T) {
+// Every agent row says its state in words, in both tabs. A badge survives a
+// terminal with no color, which a hue alone does not.
+func TestAgentRowsCarryAStateBadge(t *testing.T) {
 	m := sideTabsModel()
-	m.jobs.tree.tab = sideAgents
-	m.refreshTreeRows()
-
-	var waiting, errored bool
-	for _, r := range m.jobs.tree.rows {
-		line := stripAnsi(m.renderTreeRow(r, false, treePaneWidth))
-		if strings.Contains(line, "◆") {
-			t.Errorf("the flat list should not spend a column on ◆: %q", line)
+	for _, tab := range []sideTab{sideAgents, sideSpaces} {
+		m.jobs.tree.tab = tab
+		m.refreshTreeRows()
+		seen := map[string]bool{}
+		for _, r := range m.jobs.tree.rows {
+			if r.kind != treeAgent {
+				continue
+			}
+			line := stripAnsi(m.renderTreeRow(r, false, treePaneWidth))
+			badge, _, reported := attentionBadge(r.attention, r.seen, m.spinner())
+			if reported && !strings.Contains(line, badge) {
+				t.Errorf("tab %v: row %q should carry its badge %q", tab, line, badge)
+			}
+			seen[r.attention.String()] = true
 		}
-		glyph, _, _ := attentionMark(r.attention)
-		if glyph != "" && !strings.Contains(line, glyph) {
-			t.Errorf("row %q should carry its state glyph %q", line, glyph)
+		if !seen["waiting"] || !seen["error"] {
+			t.Fatalf("tab %v: expected the fixture to hold a waiting and an errored agent", tab)
 		}
-		switch r.attention {
-		case protocol.AttentionWaiting:
-			waiting = true
-		case protocol.AttentionError:
-			errored = true
-		}
-	}
-	if !waiting || !errored {
-		t.Fatal("expected the fixture to hold a waiting and an errored agent")
 	}
 }
 

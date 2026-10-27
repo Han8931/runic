@@ -91,6 +91,10 @@ type model struct {
 	termSidebarHidden bool
 	// lastClick backs double-click detection on both screens; see clicks.go.
 	lastClick clickState
+	// spinnerFrame advances the working-agent animation; spinnerOn guards
+	// against stacking timers. See spinner.go.
+	spinnerFrame int
+	spinnerOn    bool
 
 	// tuiWatch is the TUI-registration connection; takenOver is set when the
 	// daemon displaced this TUI because a newer `ru` attached.
@@ -293,6 +297,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.groups = msg.groups
 		m.agents = msg.terminals
 		(&m).updateAlarm(msg.terminals)
+		spinCmd := (&m).syncSpinner()
 		m.nodes = buildTree(msg.groups, msg.sessions, msg.jobs)
 		for i, n := range m.nodes {
 			if exp, ok := expanded[n.group]; ok {
@@ -306,14 +311,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name := m.pendingOpen
 			m.pendingOpen = ""
 			nm, cmd := m.openSession(name)
-			return nm, tea.Batch(cmd, clearScreenCmd(), tea.EnableMouseCellMotion)
+			return nm, tea.Batch(cmd, spinCmd, clearScreenCmd(), tea.EnableMouseCellMotion)
 		}
 		// Another client (`ru --jobs` from inside a pane) asked us to open the
 		// jobs view. Honour it only from the split view so we don't disturb a
 		// pager or an already-open table.
 		if msg.openJobsView && m.viewMode == viewSplit {
 			m, mouseCmd := m.openJobsView()
-			return m, tea.Batch(clearScreenCmd(), sampleHWCmd(m.hwMon), mouseCmd)
+			return m, tea.Batch(clearScreenCmd(), sampleHWCmd(m.hwMon), mouseCmd, spinCmd)
 		}
 		m.refreshTreeRows()
 		if m.jobs.session != "" && !m.sessionExists(m.jobs.session) {
@@ -323,13 +328,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.jobs.allJobs = msg.jobs
 			m.refreshJobsRows()
 			if m.jobs.mode == jobsPager && m.jobs.pager.follow && m.jobs.pager.running {
-				return m, m.reloadPagerCmd()
+				return m, tea.Batch(m.reloadPagerCmd(), spinCmd)
 			}
 		}
-		return m, nil
+		return m, spinCmd
 
 	case pagerLoadedMsg:
 		return m.applyPagerLoaded(msg), nil
+
+	case spinnerTickMsg:
+		m.spinnerFrame++
+		// Stop as soon as nothing is working: an idle dashboard should wake on
+		// its poll and nothing else.
+		if !m.anyWorking() {
+			m.spinnerOn = false
+			return m, nil
+		}
+		return m, spinnerTickCmd()
 
 	case hwStatsMsg:
 		m.hwStats = sysmon.Stats(msg)

@@ -101,13 +101,45 @@ func sortSessionsByAttention(sessions []protocol.SessionInfo) {
 func attentionMark(a protocol.Attention) (string, lipgloss.Style, bool) {
 	switch a {
 	case protocol.AttentionWaiting:
-		return "●", attnWaitingStyle, true
+		return "!", attnWaitingStyle, true
 	case protocol.AttentionError:
-		return "×", attnErrorStyle, true
+		return "!", attnErrorStyle, true
 	case protocol.AttentionWorking:
-		return "◐", attnWorkingStyle, true
+		// Callers that want the live frame use attentionBadge; this is the
+		// static stand-in for places with exactly one column to spend.
+		return "·", attnWorkingStyle, true
 	default:
 		return " ", sessionStyle, false
+	}
+}
+
+// attentionBadge is how a state reads on a row with room for a word: a short
+// uppercase tag in its own color, or — for a working pane — the live spinner
+// frame, because motion is the only way a screen can say "still going" without
+// claiming it in text.
+//
+// Words rather than geometric glyphs. ● ◐ × ◆ ⊕ was nine shape families
+// competing in twenty-six columns, which read as a 1990s file manager however
+// carefully each symbol was chosen; a tag survives a terminal with no color,
+// needs no legend, and leaves shape to the tree structure.
+func attentionBadge(a protocol.Attention, seen bool, spinner string) (string, lipgloss.Style, bool) {
+	switch a {
+	case protocol.AttentionWaiting:
+		if seen {
+			// Acknowledged: still the truth, no longer news, so it stops
+			// shouting in amber.
+			return "WAIT", treeSummaryStyle, true
+		}
+		return "WAIT", attnWaitingStyle, true
+	case protocol.AttentionError:
+		if seen {
+			return "ERR", treeSummaryStyle, true
+		}
+		return "ERR", attnErrorStyle, true
+	case protocol.AttentionWorking:
+		return spinner, attnWorkingStyle, true
+	default:
+		return "", treeSummaryStyle, false
 	}
 }
 

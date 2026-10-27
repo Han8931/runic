@@ -238,7 +238,7 @@ func (m model) agentTreeLabel(r treeRow) string {
 		label = "agent"
 	}
 	if m.sessionPaneCount(r.session) > 1 {
-		label += " · " + r.pane
+		label += " " + r.pane
 	}
 	return label
 }
@@ -279,25 +279,21 @@ func (m model) sessionPaneCount(session string) int {
 
 // agentChip is the right-hand status column on an agent row: the age of a state
 // that is waiting on you, and nothing at all for a quiet pane.
-func agentChip(r treeRow) (string, lipgloss.Style) {
-	_, style, _ := attentionMark(r.attention)
-	if r.since.IsZero() {
+func (m model) agentChip(r treeRow) (string, lipgloss.Style) {
+	badge, style, reported := attentionBadge(r.attention, r.seen, m.spinner())
+	if !reported {
 		return "", treeSummaryStyle
 	}
-	switch r.attention {
-	case protocol.AttentionWaiting, protocol.AttentionError:
-		if r.seen {
-			// Acknowledged: the age still matters (how long it has been broken)
-			// but it is reported quietly, since it is no longer news.
-			return waitAge(r.since), treeSummaryStyle
-		}
-		return waitAge(r.since), style
-	case protocol.AttentionWorking:
-		// A working agent reports how long it has been at it, quietly: useful
-		// for spotting one that is stuck, but not a thing to interrupt for.
-		return waitAge(r.since), treeSummaryStyle
+	if r.since.IsZero() {
+		return badge, style
 	}
-	return "", treeSummaryStyle
+	// The age belongs next to the state it is the age *of*. A working agent
+	// reports it quietly — useful for spotting one that is stuck, not a thing
+	// to interrupt for — while anything unresolved keeps its own color.
+	if r.attention == protocol.AttentionWorking {
+		return badge + " " + waitAge(r.since), style
+	}
+	return badge + " " + waitAge(r.since), style
 }
 
 // agentStateWord spells out an agent's state for the detail pane, where there is

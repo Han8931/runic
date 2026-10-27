@@ -48,7 +48,10 @@ func (m model) sessionStrip(width int, names []string, active string) (string, [
 		if name == "" {
 			label = "All sessions"
 		}
-		glyph, st, reported := attentionMark(m.sessionAttention(name))
+		// One column on a tab: "!" for anything unresolved, the live spinner
+		// frame for a working session. Both are typographic rather than
+		// geometric, and the spinner makes a busy session visibly busy.
+		glyph, st, reported := m.sessionPip(name)
 		label = strings.TrimRight(truncateToWidth(label, max(1, width-8)), " ")
 		if reported {
 			label = glyph + " " + label

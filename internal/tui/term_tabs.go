@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/han/runic/internal/protocol"
 )
@@ -72,6 +73,18 @@ func (m model) selectSessionTab(n int) (model, tea.Cmd) {
 		return m, nil
 	}
 	return m.activateSession(tabs[n-1])
+}
+
+// sessionPip is the one-column marker a session tab carries: an exclamation for
+// anything still wanting you, the live spinner frame while it works, nothing
+// when it is quiet. A tab has room for exactly one column, so the full badge
+// the tree rows use does not fit here.
+func (m model) sessionPip(name string) (string, lipgloss.Style, bool) {
+	a := m.sessionAttention(name)
+	if a == protocol.AttentionWorking {
+		return m.spinner(), attnWorkingStyle, true
+	}
+	return attentionMark(a)
 }
 
 // sessionAttention is the rolled-up state of a session from the last poll, or

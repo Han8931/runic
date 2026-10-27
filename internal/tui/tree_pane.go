@@ -546,71 +546,59 @@ func (m model) renderTreeRow(r treeRow, selected bool, width int) string {
 		style = groupStyle
 		chip, chipStyle = treeCountChip(r)
 	case treeSession:
-		// The attention glyph takes the first of the two indent columns, so rows
-		// with and without one still line up under the group above them.
-		glyph, attnStyle, reported := attentionMark(r.attention)
-		text = glyph + " " + foldMark(m.jobs.tree.collapsed[r.key], r.hasKids) + " " + r.session
-		if r.worktree != "" {
-			// Mark isolation without spending the width a full branch name
-			// needs; the branch itself shows in the pane status bar and the
-			// tree's action menu.
-			text += " ⊕"
-		}
+		// Name on the left, state on the right. The glyph column is gone: a
+		// badge in the chip says more in the space the ⊕ and the attention
+		// glyph used to share, and the row reads as a name rather than as a
+		// row of symbols. The branch still shows in Details and the pane status
+		// bar, which is where you look when you care which checkout it is.
+		text = foldMark(m.jobs.tree.collapsed[r.key], r.hasKids) + " " + r.session
+		// A chevron for the attached session, not a bar: the gutter already owns
+		// ▌ for the cursor, and two bars on one row say nothing twice.
 		if r.session == m.activeSession {
-			text = "› " + text
+			text = "›" + text
+		} else {
+			text = " " + text
 		}
 		style = sessionStyle
-		if reported {
-			style = attnStyle
-		}
-		// An unanswered agent reports its age, which outranks job counts: it is
-		// the number the sidebar exists to show. Once acknowledged it gives the
-		// column back to the job counts — the error is still on the row, in its
-		// color, but it is no longer the thing demanding a number.
-		if protocol.Unresolved(r.attention, r.seen) && !r.since.IsZero() {
-			chip, chipStyle = waitAge(r.since), attnStyle
-		} else {
+		badge, badgeStyle, reported := attentionBadge(r.attention, r.seen, m.spinner())
+		switch {
+		// An unanswered agent reports its age next to its state: it is the
+		// number the sidebar exists to show, and it outranks job counts.
+		case reported && protocol.Unresolved(r.attention, r.seen) && !r.since.IsZero():
+			chip, chipStyle = badge+" "+waitAge(r.since), badgeStyle
+		case reported && r.attention == protocol.AttentionWorking && !r.since.IsZero():
+			chip, chipStyle = badge+" "+waitAge(r.since), badgeStyle
+		case reported && badge != "":
+			chip, chipStyle = badge, badgeStyle
+		default:
 			chip, chipStyle = treeCountChip(r)
 		}
 	case treeAgent:
-		// ◆ marks an agent. The shape is what matters: a session row leads with
-		// a fold mark and an agent with ◆, so the two can no longer be mistaken
-		// for each other even in a terminal with no color, or by a reader who
-		// cannot tell violet from amber. Previously both rendered as an
-		// attention glyph plus a name in the same style, which is exactly why
-		// they looked alike.
+		// Neutral text, not a colored row. Coloring every agent row violet
+		// spent the strongest signal on the least urgent fact — that something
+		// is an agent at all — which is the opposite of the rule the rest of
+		// the screen follows. Color now means urgency only; what kind of thing
+		// a row is comes from where it sits and what it says.
 		//
-		// The row is drawn in one style (the renderer strips the label's own
-		// styling before padding it), so color carries urgency and falls back to
-		// violet — "this is an agent" survives the agent being calm.
-		glyph, attnStyle, reported := attentionMark(r.attention)
+		// Indentation under its session plus the kind as its name is what
+		// distinguishes it: a session row carries a fold mark and its own name,
+		// an agent row sits a level deeper and is called "claude".
 		if m.jobs.tree.tab == sideAgents {
-			// The flat list is all agents, so there is nothing to tell apart and
-			// the column is better spent on the state glyph — which survives a
-			// terminal with no color, where ◆ on every row would not. The row
-			// also has to name its own session: no session row sits above it.
-			text = glyph + " " + m.agentLabel(r)
+			// The flat list has no session row above it, so it names its own.
+			text = "  " + m.agentLabel(r)
 		} else {
-			// Nested among its session's jobs, at the depth jobs use. Here the
-			// marker earns the column: it is what stops an agent row reading as
-			// another session.
-			text = "   ◆ " + m.agentTreeLabel(r)
+			text = "     " + m.agentTreeLabel(r)
 		}
-		switch {
-		case protocol.Unresolved(r.attention, r.seen):
+		// Faint by default. The tree's hierarchy is carried by weight rather
+		// than hue — group bold, session bright, agent faint, job in its state
+		// color — so an agent reads as a detail of its session until it has
+		// something to say, at which point its state color takes the row.
+		style = treeSummaryStyle
+		if protocol.Unresolved(r.attention, r.seen) {
+			_, attnStyle, _ := attentionBadge(r.attention, r.seen, m.spinner())
 			style = attnStyle
-		case reported && r.attention == protocol.AttentionError:
-			style = attnStyle // acknowledged, still broken
-		case r.attention == protocol.AttentionWorking:
-			style = agentStyle
-		default:
-			style = agentDimStyle
 		}
-		// The note stays out of the row. In 26 columns, a name and an age leave
-		// room for about one word of it, and "tests failed" clipped to "tests"
-		// reads as part of the name rather than as a message. The detail pane
-		// spells it out instead, as it does for a session row.
-		chip, chipStyle = agentChip(r)
+		chip, chipStyle = m.agentChip(r)
 	case treeJob:
 		label := r.job.Label
 		if label == "" {

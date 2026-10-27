@@ -198,10 +198,11 @@ The Sessions pane has two: **Spaces** and **Agents**.
 
 - **Spaces** is the collapsible group → session → agent/job tree. A group *is* a
   space: a named workspace holding sessions. A session's agents are its
-  children, marked `◆` and named by kind, so an agent row can never be mistaken
-  for another session: an agent that needs you sits **above** the session's
-  jobs, and a quiet one sits below them, out of the way until it has something
-  to say.
+  children, marked its kind rather than its session's name — which is
+  already on the row above — so an agent row cannot be mistaken for another
+  session: a session carries a fold mark, an agent sits a level deeper. An agent
+  that needs you sits **above** the session's jobs, and a quiet one sits below
+  them, out of the way until it has something to say.
 - **Agents** drops the hierarchy and lists every live pane that has reported a
   state, most urgent first — errors, then panes waiting on you, then the ones
   working, then the quiet ones. Within a state the one that has been there
@@ -220,10 +221,10 @@ visible from any view.
 ╭────────────────────────╮ ╭──────────────────────────────────────────────────────────╮
 │  Spaces 2   Agents 2!  │ │  All 3   Running  Queued  Done  Failed 1                 │
 │ ▾ DEFAULT           1R │ │   ID   GROUP ▲  SESSION  STATE    TIME  WORK             │
-│ ● ▾ agent-1 ⊕      14m │ │▌   0   default  build    DONE     40s   make all         │
-│    ◆ claude        14m │ │    1   default  build    RUNNING  4s    tests  go test   │
-│   ▾ build           1R │ │    2   default  build    EXIT 2   1s    go vet ./...     │
-│     #0 compile         │ ╰──────────────────────────────────────────────────────────╯
+│›▾ agent-1      WAIT 14m│ │▌   0   default  build    DONE     40s   make all         │
+│     claude     WAIT 14m│ │    1   default  build    RUNNING  4s    tests  go test   │
+│ ▾ build             1R │ │    2   default  build    EXIT 2   1s    go vet ./...     │
+│    #0 compile          │ ╰──────────────────────────────────────────────────────────╯
 │                        │ ╭──────────────────────────────────────────────────────────╮
 │                        │ │  job details ────────────────────────────────────────────│
 │                        │ │  Command: make all                                       │
@@ -238,27 +239,27 @@ visible from any view.
 ```
 ╭────────────────────────╮
 │  Spaces   Agents 4     │
-│▌× agent-2 · p2     50s │
-│ ● agent-1          14m │
-│ ◐ agent-2 · p1      3m │
-│   default              │
+│▌ agent-2 · p2   ERR 50s│
+│  agent-1       WAIT 14m│
+│  agent-2 · p1      ⠹ 3m│
+│  default               │
 ╰────────────────────────╯
 ```
 
 In **Spaces** the same agents appear under their own sessions instead, marked
-`◆` and named by kind — an agent needing you above the session's jobs, a quiet
+their kind — an agent needing you above the session's jobs, a quiet
 one below them:
 
 ```
 ╭────────────────────────╮
 │  Spaces 2   Agents 4!  │
 │ ▾ WORK          1R 1Q  │
-│ ● ▾ agent-1 ⊕     14m  │
-│    ◆ claude       14m  │   ← waiting: above the jobs
-│ ◐ ▾ agent-2 ⊕      1Q  │
-│    ◆ codex · p2    1m  │   ← errored: above the jobs
-│     #4 go vet          │
-│    ◆ codex · p1    3m  │   ← working: below them
+│›▾ agent-1      WAIT 14m│
+│     claude     WAIT 14m│   ← waiting: above the jobs
+│ ▾ agent-2         ⠹ 3m │
+│     codex p2    ERR 1m │   ← errored: above the jobs
+│    #4 go vet           │
+│     codex p1      ⠹ 3m │   ← working: below them
 ╰────────────────────────╯
 ```
 
@@ -271,12 +272,11 @@ session's first pane instead of nowhere. What the agent last *said* goes in the
 Details pane rather than the row — at 26 columns a clipped note reads as part
 of the name.
 
-Agent rows carry their own color — violet for "this is an agent, and it is
-fine", and the attention color when it wants something — so the hue says how
-urgent a row is while the marker says what kind of row it is. A session row
-never wears `◆`, and in the flat **Agents** tab the column goes back to the
-state glyph, since everything there is an agent and a glyph survives a terminal
-with no color.
+Color is spent on urgency alone. The tree's hierarchy comes from weight
+instead — group bold, session bright, agent faint, job in its state color — so
+an agent reads as a detail of its session until it has something to say, at
+which point its state color takes the row. Giving "is an agent" a hue of its own
+left nothing louder for "this agent is stuck".
 
 Note that the status bar's `N sessions need you` counts sessions while the
 **Agents** badge counts panes: a session with two blocked agents is one session
@@ -413,17 +413,19 @@ Every open session is a tab along the top border of the terminal view, so the
 sessions you have running are visible from inside any one of them:
 
 ```
-╭ ● agent-1   ◐ agent-2   broken   default ───────────────────────────╮
+╭ ! agent-1   ⠹ agent-2   broken   default ───────────────────────────╮
 │ $                                                                   │
 ```
 
 The active session is a filled chip; a session that has reported something wears
-its attention glyph and takes that state's color across the whole tab, so it
-reads at a glance. That is the point of the strip — an agent that starts **waiting**
+a one-column mark — `!` for anything still wanting you, the live spinner while
+it works — and takes that state's color across the whole tab, so it reads at a
+glance. A tab has room for one column, which is why it gets a mark where a tree
+row gets the word. That is the point of the strip — an agent that starts **waiting**
 on you shows up on its tab while you are working in a different session, which
 previously meant detaching to the management screen to notice. A `working` agent
-shows `◐`; an error you have already acknowledged shows no glyph, since it is no
-longer news.
+shows the live `⠹` spinner; an error you have already acknowledged shows no mark
+at all, since it is no longer news.
 
 Roll between tabs with `Ctrl+B n` / `Ctrl+B p`, or jump straight to one with
 `Ctrl+B 1`…`9`. Tabs are ordered by name, so a digit keeps pointing at the same
@@ -669,11 +671,18 @@ like an inbox instead of a wall of identical shells:
 
 | State | Meaning | In the tree |
 |-------|---------|-------------|
-| `waiting` | blocked on you | `●` amber, floats to the top, with how long |
-| `error` | stopped on a failure | `×` red, floats to the top, with how long |
-| `error` (seen) | still broken, acknowledged | `×` red, stays put, age shown quietly |
-| `working` | busy, needs nothing | `◐` green |
+| `waiting` | blocked on you | `WAIT` amber, floats to the top, with how long |
+| `error` | stopped on a failure | `ERR` red, floats to the top, with how long |
+| `waiting`/`error` (seen) | still true, acknowledged | same word, stated quietly, stays put |
+| `working` | busy, needs nothing | an animated `⠋` spinner in green, with how long |
 | `done` / `idle` | nothing to do | plain |
+
+States are **words, not symbols**. `● ◐ × ◆ ⊕` was nine shape families competing
+in twenty-six columns, which reads as a 1990s file manager however carefully
+each glyph is chosen; a short tag needs no legend and survives a terminal with
+no color. A working agent gets the spinner instead, because motion is the one
+thing a static row cannot fake — and it only animates while something is
+actually working, so an idle dashboard wakes on its poll and nothing else.
 
 The sidebar shows how long a session has needed attention, such as `14m`.
 Select a session to see its branch, worktree, latest note, and job counts in
@@ -814,9 +823,8 @@ ru session create agent-4 --worktree --agent claude  # isolated, agent started
 legitimate thing to want, so neither implies the other.
 
 In the TUI, the **New session** box (`n`) has a `branch` field: leave it blank
-for an ordinary session, or name a branch to isolate it. Isolated sessions show
-`⊕` in the tree, and the branch appears in the pane status bar and the tree's
-action menu (`m`).
+for an ordinary session, or name a branch to isolate it. The branch appears in the
+pane status bar, the Details panel, and the tree's action menu (`m`).
 
 Runic creates worktrees under `~/.local/state/runic/worktrees/` and only removes
 worktree directories it manages. Deleting a session keeps its branch and commits.

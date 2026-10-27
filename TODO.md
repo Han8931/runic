@@ -240,6 +240,34 @@ behaviour change and a key bound to it.
       request ahead of metadata, and collapsing the sidebar against the table's
       minimum useful width rather than a fixed 48-column floor.
 
+### Priority 4g — the icon vocabulary — DONE
+Han: "the current UI looks so old fashioned, especially the icons like circles
+and diamonds." The cause was not any single glyph but the count: `● ◐ × ◆ ⊕ ▾ ▸
+▌ ▏ ›` — nine shape families competing in twenty-six columns, which reads as a
+1990s file manager however carefully each symbol is chosen.
+
+- [x] State is **words**: `WAIT` / `ERR` in their own color, from
+      `attentionBadge`. A tag needs no legend and survives a terminal with no
+      color, which a hue alone does not.
+- [x] A working pane gets an **animated braille spinner** (`spinner.go`), because
+      motion is the one thing a static row cannot fake. It ticks at 8Hz *only
+      while something is working* — this TUI sits open for hours, and an
+      animation nobody is watching is pure wakeups.
+- [x] Retired `● ◐ × ◆ ⊕` entirely. Kept the chevrons, cursor bar and `›`:
+      those are structure and punctuation, present in every modern UI, and were
+      never what made it feel dated. A preview that dropped the fold marks was
+      rejected on the way in — it loses "collapsed" versus "empty".
+- [x] Session tabs get a one-column pip (`!`, or the spinner) rather than the
+      full badge, since a tab has exactly one column to spend.
+- [x] Agent rows are **faint, not violet** (an external review's point 4, which
+      caught a real inconsistency in the rule stated one commit earlier). The
+      tree's hierarchy is weight — group bold, session bright, agent faint, job
+      in its state color — so color is left for urgency alone. `cViolet` is gone:
+      spending the loudest signal on a row's *category* left nothing louder for
+      "this agent is stuck".
+- [x] Dropped the `⊕` worktree mark from rows. The branch is in the Details
+      panel and the pane status bar, which is where you look when you care.
+
 ### Priority 5 — the agent as a first-class object
 Partly done. A session now *has* an agent — a kind it was created to host, which
 the daemon starts in its first pane — so "which agent is this?" and "is this an
