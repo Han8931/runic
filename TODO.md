@@ -133,8 +133,10 @@ state on a pane — see Priority 5, which P6 depends on.
       the loudest thing already dealt with.
 - [x] Protocol 10 → 11: `Seen` on `TerminalInfo`, `AttentionSeen` on
       `SessionInfo`.
-- [ ] Not done: no way to acknowledge from the TUI without attaching, and no
-      "unacknowledge". `ru mark error` again is the workaround.
+- [x] Acknowledging without attaching: `!` on a sidebar row, `ru ack` from a
+      script (see Priority 4f, which also stopped attaching from *resolving* a
+      waiting pane).
+- [ ] Not done: "unacknowledge". `ru mark error` again is the workaround.
 
 ### Priority 4d — session tabs in the terminal view — DONE
 - [x] Every session in the daemon's catalog is a tab on the top border of the
