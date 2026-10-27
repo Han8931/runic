@@ -55,6 +55,14 @@ type JobQueue struct {
 	// have one. Keyed by session name; absent means the session has no worktree
 	// and its panes spawn in the daemon's working directory as before.
 	worktrees map[string]SessionWorktree
+	// agents holds the agent kind a session hosts ("claude"), for the sessions
+	// created to run one. Keyed by session name; absent means an ordinary
+	// session whose panes are plain shells.
+	agents map[string]string
+	// agentStarted records that a session's agent was actually launched, which
+	// is what separates "this agent exited" from "you never opened it" — the
+	// two states that otherwise look identical once no pane is live.
+	agentStarted map[string]bool
 	// dirty is set by every mutation and cleared by save(), so snapshots are
 	// only written when the queue actually changed (the server calls save
 	// after every message, including read-only polls).
@@ -65,10 +73,12 @@ type JobQueue struct {
 
 func NewJobQueue() *JobQueue {
 	return &JobQueue{
-		byID:      make(map[int]*Job),
-		sessions:  map[string]string{"default": "default"},
-		groups:    map[string]bool{"default": true},
-		worktrees: make(map[string]SessionWorktree),
+		byID:         make(map[int]*Job),
+		sessions:     map[string]string{"default": "default"},
+		groups:       map[string]bool{"default": true},
+		worktrees:    make(map[string]SessionWorktree),
+		agents:       make(map[string]string),
+		agentStarted: make(map[string]bool),
 	}
 }
 
@@ -572,6 +582,8 @@ func (q *JobQueue) Reset() []SessionWorktree {
 	q.sessions = map[string]string{"default": "default"}
 	q.groups = map[string]bool{"default": true}
 	q.worktrees = make(map[string]SessionWorktree)
+	q.agents = make(map[string]string)
+	q.agentStarted = make(map[string]bool)
 	q.nextID, q.lastID = 0, 0
 	q.dirty = true
 	q.mu.Unlock()

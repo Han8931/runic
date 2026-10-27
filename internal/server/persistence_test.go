@@ -105,6 +105,55 @@ func TestLoadJobQueueMarksRunningJobsInterrupted(t *testing.T) {
 	}
 }
 
+// An agent session is still an agent session after a daemon restart: the kind
+// is what the TUI labels it with and what decides whether its next first pane
+// starts the tool, so losing it would quietly demote the session to shells.
+func TestSaveRoundTripsSessionAgents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue.json")
+	q := NewJobQueue()
+	q.CreateSession("a1")
+	q.SetSessionAgent("a1", "claude")
+	q.CreateSession("plain")
+	if err := q.save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	restored, err := loadJobQueue(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := restored.SessionAgent("a1"); got != "claude" {
+		t.Errorf("restored agent = %q, want claude", got)
+	}
+	if got := restored.SessionAgent("plain"); got != "" {
+		t.Errorf("a plain session came back as agent %q", got)
+	}
+}
+
+// A snapshot written before agent sessions existed must still load — the field
+// is omitted there, and a nil map would panic the first lookup.
+func TestLoadJobQueueWithoutAgentsSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue.json")
+	old := `{"version":1,"next_id":0,"last_id":0,"jobs":[],` +
+		`"sessions":{"default":"default"},"groups":{"default":true}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	q, err := loadJobQueue(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := q.SessionAgent("default"); got != "" {
+		t.Errorf("agent = %q, want empty", got)
+	}
+	// And the restored queue can still take an agent session.
+	q.CreateSession("a1")
+	q.SetSessionAgent("a1", "codex")
+	if got := q.SessionAgent("a1"); got != "codex" {
+		t.Errorf("agent = %q after setting it on a legacy snapshot", got)
+	}
+}
+
 func TestLoadJobQueueRejectsCorruptSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "queue.json")
 	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {

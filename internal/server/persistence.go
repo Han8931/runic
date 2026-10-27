@@ -23,6 +23,12 @@ type queueSnapshot struct {
 	// worktree sessions existed, so the version does not need bumping — a bump
 	// would make every existing snapshot unreadable and discard the user's queue.
 	Worktrees map[string]SessionWorktree `json:"worktrees,omitempty"`
+	// Agents is the session → agent-kind table, omitted when empty for the same
+	// reason as Worktrees: an older snapshot simply has no agent sessions.
+	Agents map[string]string `json:"agents,omitempty"`
+	// AgentStarted is a separate key rather than a richer Agents value so a
+	// snapshot written by a build that predates it still loads as-is.
+	AgentStarted map[string]bool `json:"agent_started,omitempty"`
 }
 
 // snapshotWriter is the function save() uses to put bytes on disk. It is a
@@ -52,13 +58,15 @@ func (q *JobQueue) save(path string) error {
 	}
 	q.dirty = false
 	snapshot := queueSnapshot{
-		Version:   queueSnapshotVersion,
-		NextID:    q.nextID,
-		LastID:    q.lastID,
-		Jobs:      q.jobs,
-		Sessions:  q.sessions,
-		Groups:    q.groups,
-		Worktrees: q.worktrees,
+		Version:      queueSnapshotVersion,
+		NextID:       q.nextID,
+		LastID:       q.lastID,
+		Jobs:         q.jobs,
+		Sessions:     q.sessions,
+		Groups:       q.groups,
+		Worktrees:    q.worktrees,
+		Agents:       q.agents,
+		AgentStarted: q.agentStarted,
 	}
 	data, err := json.MarshalIndent(snapshot, "", "  ")
 	q.mu.Unlock()
@@ -146,6 +154,12 @@ func loadJobQueue(path string) (*JobQueue, error) {
 	}
 	if snapshot.Worktrees != nil {
 		q.worktrees = snapshot.Worktrees
+	}
+	if snapshot.Agents != nil {
+		q.agents = snapshot.Agents
+	}
+	if snapshot.AgentStarted != nil {
+		q.agentStarted = snapshot.AgentStarted
 	}
 	q.sessions["default"] = "default"
 	q.groups["default"] = true

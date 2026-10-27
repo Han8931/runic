@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 
 	"github.com/han/runic/internal/protocol"
 )
@@ -23,8 +24,23 @@ func (s *Server) handleSessionCreate(conn net.Conn, msg *protocol.Msg) bool {
 	if err != nil {
 		return s.sendError(conn, err.Error())
 	}
+	// Validate the agent kind before creating anything: a session that silently
+	// turned out to be a plain shell would be worse than a refused create,
+	// because you would only find out by attaching to it.
+	agentKind := ""
+	if payload.Agent != "" {
+		kind, _, ok := s.resolveAgent(payload.Agent)
+		if !ok {
+			return s.sendError(conn, fmt.Sprintf("unknown agent %q (known: %s)",
+				payload.Agent, strings.Join(s.cfg.AgentKinds(), ", ")))
+		}
+		agentKind = kind
+	}
 	if !s.jobs.CreateSession(payload.Name) {
 		return s.sendError(conn, "session already exists")
+	}
+	if agentKind != "" {
+		s.jobs.SetSessionAgent(payload.Name, agentKind)
 	}
 	if payload.Worktree {
 		wt, err := addWorktree(payload.Name, payload.Repo, payload.Branch)

@@ -122,7 +122,7 @@ func TestPromptMarkerClearsWorking(t *testing.T) {
 
 	m.Mark("s", "main", protocol.AttentionWorking, "building")
 	term.broadcast([]byte("some output" + promptMarker))
-	if got, _, _ := term.Attention(); got != protocol.AttentionIdle {
+	if got, _, _, _ := term.Attention(); got != protocol.AttentionIdle {
 		t.Fatalf("attention = %v after a prompt, want idle", got)
 	}
 }
@@ -142,14 +142,15 @@ func TestPromptMarkerKeepsNeedsYouStates(t *testing.T) {
 	for _, want := range []protocol.Attention{protocol.AttentionWaiting, protocol.AttentionError} {
 		m.Mark("s", "main", want, "note")
 		term.broadcast([]byte(promptMarker))
-		if got, _, _ := term.Attention(); got != want {
+		if got, _, _, _ := term.Attention(); got != want {
 			t.Fatalf("attention = %v after a prompt, want %v preserved", got, want)
 		}
 	}
 }
 
-// Attaching to a pane is how the alert is acknowledged, so a "needs you" state
-// clears; a pane still working keeps its state (watching it is not finishing it).
+// Attaching resolves a *waiting* pane: it was blocked on you and now you are
+// here. A pane still working keeps its state (watching it is not finishing it).
+// An error is a separate case — see TestSeenKeepsErrorButStopsNagging.
 func TestSeenClearsOnlyNeedsYou(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	m := NewTerminalManager()
@@ -161,14 +162,119 @@ func TestSeenClearsOnlyNeedsYou(t *testing.T) {
 
 	m.Mark("s", "main", protocol.AttentionWaiting, "answer me")
 	term.fire(term.seen())
-	if got, note, _ := term.Attention(); got != protocol.AttentionIdle || note != "" {
+	if got, note, _, _ := term.Attention(); got != protocol.AttentionIdle || note != "" {
 		t.Fatalf("attention = %v/%q after attach, want idle and no note", got, note)
 	}
 
 	m.Mark("s", "main", protocol.AttentionWorking, "busy")
 	term.fire(term.seen())
-	if got, _, _ := term.Attention(); got != protocol.AttentionWorking {
+	if got, _, _, _ := term.Attention(); got != protocol.AttentionWorking {
 		t.Fatalf("attention = %v after attach, want working preserved", got)
+	}
+}
+
+// Attaching to an errored pane acknowledges the alert without pretending the
+// failure went away: the state and its note survive, and only the "needs you"
+// accounting changes. Clearing it would make the dashboard look healthier
+// merely because the error had been looked at.
+func TestSeenKeepsErrorButStopsNagging(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	m := NewTerminalManager()
+	term, err := m.GetOrCreate("s", "main", 80, 24)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	defer m.KillAll()
+
+	m.Mark("s", "main", protocol.AttentionError, "tests failed")
+	if a, _, _, seen := term.Attention(); !protocol.Unresolved(a, seen) {
+		t.Fatal("a fresh error should need you")
+	}
+
+	term.fire(term.seen())
+	a, note, _, seen := term.Attention()
+	if a != protocol.AttentionError {
+		t.Errorf("attention = %v after attach, want the error preserved", a)
+	}
+	if note != "tests failed" {
+		t.Errorf("note = %q after attach, want it preserved", note)
+	}
+	if !seen {
+		t.Error("attaching should mark the error seen")
+	}
+	if protocol.Unresolved(a, seen) {
+		t.Error("an acknowledged error should stop counting as needing you")
+	}
+
+	// Acknowledging twice is not an event: there is nothing new to report.
+	if ev := term.seen(); ev != nil {
+		t.Errorf("a second attach should produce no transition, got %+v", ev)
+	}
+
+	// Explicitly resolving it is what actually clears the state.
+	m.Mark("s", "main", protocol.AttentionIdle, "")
+	if a, _, _, seen := term.Attention(); a != protocol.AttentionIdle || seen {
+		t.Errorf("ru mark done should clear the error, got %v seen=%v", a, seen)
+	}
+}
+
+// A fresh error after you acknowledged the last one has to be able to get your
+// attention back, so any new mark resets the acknowledgment.
+func TestNewMarkResetsSeen(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	m := NewTerminalManager()
+	term, err := m.GetOrCreate("s", "main", 80, 24)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	defer m.KillAll()
+
+	m.Mark("s", "main", protocol.AttentionError, "first failure")
+	term.fire(term.seen())
+	if _, _, _, seen := term.Attention(); !seen {
+		t.Fatal("precondition: the first error should be acknowledged")
+	}
+
+	m.Mark("s", "main", protocol.AttentionError, "second failure")
+	a, note, _, seen := term.Attention()
+	if seen {
+		t.Error("a new error should not inherit the previous acknowledgment")
+	}
+	if !protocol.Unresolved(a, seen) {
+		t.Error("a new error should need you again")
+	}
+	if note != "second failure" {
+		t.Errorf("note = %q, want the new failure's", note)
+	}
+}
+
+// The session roll-up should report what is still outstanding, not the loudest
+// thing already dealt with: an unacknowledged error outranks an acknowledged
+// waiting even though waiting is the more urgent state.
+func TestSessionAttentionPrefersUnresolved(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	m := NewTerminalManager()
+	if _, err := m.GetOrCreate("s", "p1", 80, 24); err != nil {
+		t.Fatalf("GetOrCreate p1: %v", err)
+	}
+	p2, err := m.GetOrCreate("s", "p2", 80, 24)
+	if err != nil {
+		t.Fatalf("GetOrCreate p2: %v", err)
+	}
+	defer m.KillAll()
+
+	// p1 errors and stays unacknowledged; p2 waits and is acknowledged.
+	m.Mark("s", "p1", protocol.AttentionError, "build broke")
+	m.Mark("s", "p2", protocol.AttentionWaiting, "answer me")
+	p2.fire(p2.seen()) // waiting is resolved outright by attaching
+
+	got := m.SessionAttention()["s"]
+	if got.Attention != protocol.AttentionError || got.AttentionSeen {
+		t.Errorf("session rolled up to %v (seen=%v), want the unresolved error",
+			got.Attention, got.AttentionSeen)
+	}
+	if got.AttentionNote != "build broke" {
+		t.Errorf("note = %q, want the unresolved pane's", got.AttentionNote)
 	}
 }
 

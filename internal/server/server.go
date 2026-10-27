@@ -78,6 +78,7 @@ func New(cfg *config.Config) (*Server, error) {
 	scheduler.SetOnStateChangeHook(srv.queueChanged)
 	terminals.SetAttentionHook(srv.onAttentionChanged)
 	terminals.SetSessionDirResolver(jobs.SessionDir)
+	terminals.SetSessionAgentResolver(srv.sessionAgentCommand)
 
 	return srv, nil
 }
@@ -277,6 +278,8 @@ func (s *Server) dispatch(ctx context.Context, conn net.Conn, msg *protocol.Msg)
 		return s.handleTerminalListAll(conn)
 	case protocol.MsgMark:
 		return s.handleMark(conn, msg)
+	case protocol.MsgAck:
+		return s.handleAck(conn, msg)
 	case protocol.MsgTUIAttach:
 		return s.handleTUIAttach(conn)
 	case protocol.MsgReset:

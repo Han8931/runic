@@ -28,7 +28,10 @@ func (q *JobQueue) AllSessionInfo() []protocol.SessionInfo {
 
 	sessions := make([]protocol.SessionInfo, 0, len(q.sessions))
 	for name, group := range q.sessions {
-		info := protocol.SessionInfo{Name: name, Group: group}
+		info := protocol.SessionInfo{
+			Name: name, Group: group,
+			Agent: q.agents[name], AgentStarted: q.agentStarted[name],
+		}
 		if wt, ok := q.worktrees[name]; ok {
 			info.Worktree, info.Branch = wt.Path, wt.Branch
 		}
@@ -113,6 +116,53 @@ func (q *JobQueue) SetSessionWorktree(session string, wt SessionWorktree) {
 	q.dirty = true
 }
 
+// SetSessionAgent records the agent kind a session hosts. An empty kind clears
+// it, which is what makes "this session is an agent" a property the daemon can
+// answer before the agent has reported anything.
+func (q *JobQueue) SetSessionAgent(session, kind string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.agents == nil {
+		q.agents = make(map[string]string)
+	}
+	if kind == "" {
+		delete(q.agents, session)
+	} else {
+		q.agents[session] = kind
+	}
+	q.dirty = true
+}
+
+// SessionAgent returns the agent kind a session hosts, or "" for an ordinary
+// session.
+func (q *JobQueue) SessionAgent(session string) string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.agents[session]
+}
+
+// MarkAgentStarted records that a session's agent has been launched at least
+// once, so a session with no live pane can be reported as *exited* rather than
+// merely unopened.
+func (q *JobQueue) MarkAgentStarted(session string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.agentStarted == nil {
+		q.agentStarted = make(map[string]bool)
+	}
+	if !q.agentStarted[session] {
+		q.agentStarted[session] = true
+		q.dirty = true
+	}
+}
+
+// AgentStarted reports whether a session's agent has ever been launched.
+func (q *JobQueue) AgentStarted(session string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.agentStarted[session]
+}
+
 // SessionWorktreeFor returns a session's worktree, if it has one.
 func (q *JobQueue) SessionWorktreeFor(session string) (SessionWorktree, bool) {
 	q.mu.Lock()
@@ -157,6 +207,14 @@ func (q *JobQueue) RenameSession(oldName, newName string) bool {
 		delete(q.worktrees, oldName)
 		q.worktrees[newName] = wt
 	}
+	if kind, ok := q.agents[oldName]; ok {
+		delete(q.agents, oldName)
+		q.agents[newName] = kind
+	}
+	if started, ok := q.agentStarted[oldName]; ok {
+		delete(q.agentStarted, oldName)
+		q.agentStarted[newName] = started
+	}
 
 	for _, j := range q.jobs {
 		if j.Info.Session == oldName {
@@ -200,6 +258,8 @@ func (q *JobQueue) DeleteSession(name string) (bool, string) {
 	q.jobs = remaining
 	delete(q.sessions, name)
 	delete(q.worktrees, name)
+	delete(q.agents, name)
+	delete(q.agentStarted, name)
 	q.dirty = true
 	q.mu.Unlock()
 

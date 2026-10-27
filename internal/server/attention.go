@@ -101,42 +101,64 @@ func (m *TerminalManager) SessionAttention() map[string]protocol.SessionInfo {
 		if t.isDone() {
 			continue
 		}
-		a, note, since := t.Attention()
+		a, note, since, seen := t.Attention()
 		if a == protocol.AttentionNone {
 			continue
 		}
 		name := t.sessionName()
-		// Equal urgency keeps the pane that has been in the state longest: with
-		// two agents waiting, the one you have kept waiting is the one the
-		// session should be reporting.
 		if cur, ok := out[name]; ok {
-			if cur.Attention > a {
-				continue
-			}
-			if cur.Attention == a && !cur.AttentionSince.IsZero() && !cur.AttentionSince.After(since) {
-				continue
+			// A pane that still needs you outranks one whose alert you have
+			// already acknowledged, whatever their raw urgency: the session
+			// should report what is outstanding, not the loudest thing you have
+			// already dealt with.
+			curLive := protocol.Unresolved(cur.Attention, cur.AttentionSeen)
+			newLive := protocol.Unresolved(a, seen)
+			if curLive != newLive {
+				if curLive {
+					continue
+				}
+			} else {
+				if cur.Attention > a {
+					continue
+				}
+				// Equal urgency keeps the pane that has been in the state
+				// longest: with two agents waiting, the one you have kept
+				// waiting is the one the session should be reporting.
+				if cur.Attention == a && !cur.AttentionSince.IsZero() && !cur.AttentionSince.After(since) {
+					continue
+				}
 			}
 		}
-		out[name] = protocol.SessionInfo{Attention: a, AttentionNote: note, AttentionSince: since}
+		out[name] = protocol.SessionInfo{
+			Attention:      a,
+			AttentionNote:  note,
+			AttentionSince: since,
+			AttentionSeen:  seen,
+		}
 	}
 	return out
 }
 
 // Attention reports the pane's current self-reported state, the note that came
-// with it, and when it was set.
-func (t *TerminalPTY) Attention() (protocol.Attention, string, time.Time) {
+// with it, when it was set, and whether its alert has been acknowledged.
+func (t *TerminalPTY) Attention() (protocol.Attention, string, time.Time, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.attention, t.note, t.since
+	return t.attention, t.note, t.since, t.attnSeen
 }
 
 // setAttention records a new state and returns the transition to fire, or nil
 // when nothing changed (so a hook that polls `ru mark working` in a loop does
 // not notify on every call).
+//
+// Any fresh report clears the acknowledgment: an agent that errors again after
+// you looked at the last failure is telling you about a new one, and it has to
+// be able to get your attention back.
 func (t *TerminalPTY) setAttention(a protocol.Attention, note string, now time.Time) *AttentionEvent {
 	t.mu.Lock()
 	prev, prevNote := t.attention, t.note
 	t.attention, t.note, t.since = a, note, now
+	t.attnSeen = false
 	// The session label can be reassigned by a rename; read it here, under the
 	// same lock that guards it, so the event names the session the pane is in.
 	session := t.session
@@ -148,15 +170,34 @@ func (t *TerminalPTY) setAttention(a protocol.Attention, note string, now time.T
 	return &AttentionEvent{Session: session, Pane: t.pane, From: prev, To: a, Note: note}
 }
 
-// seen clears a "needs you" state once a client actually attaches to the pane:
-// opening the session is how you acknowledge its alert, so the inbox empties as
-// you work through it. A pane still claiming to be working keeps that state —
+// seen acknowledges a pane's alert once a client actually attaches to it, so
+// the inbox empties as you work through it. What that means depends on the
+// state, because acknowledging is not the same as fixing:
+//
+//   - waiting is *resolved* by attaching. The pane was blocked on you and now
+//     you are here, so it clears to idle.
+//   - error is only *acknowledged*. The failure is still a failure and the note
+//     explaining it is the most useful thing on screen, so both survive; the
+//     pane simply stops counting as needing you until something marks it done.
+//
+// Clearing an error here would make the dashboard look healthier merely because
+// you had glanced at it. A pane still claiming to be working keeps that state —
 // attaching to watch it does not make it idle.
 func (t *TerminalPTY) seen() *AttentionEvent {
 	t.mu.Lock()
-	if !t.attention.NeedsYou() {
+	a := t.attention
+	if !a.NeedsYou() || t.attnSeen {
 		t.mu.Unlock()
 		return nil
+	}
+	if a == protocol.AttentionError {
+		t.attnSeen = true
+		session, note := t.session, t.note
+		t.mu.Unlock()
+		// Report the acknowledgment as a transition so `on_attention` can act
+		// on it, naming the same state on both sides: nothing about the pane
+		// changed except that you now know.
+		return &AttentionEvent{Session: session, Pane: t.pane, From: a, To: a, Note: note}
 	}
 	t.mu.Unlock()
 	return t.setAttention(protocol.AttentionIdle, "", time.Now())
@@ -173,6 +214,12 @@ func (t *TerminalPTY) seen() *AttentionEvent {
 //
 // Caller must hold t.mu.
 func (t *TerminalPTY) noteOutputLocked(data []byte) *AttentionEvent {
+	// Any output at all refreshes the liveness timestamp. This is the one signal
+	// a self-report cannot provide: an agent wedged mid-task cannot tell you it
+	// is stuck. Recording *when* bytes last arrived is a fact about the stream,
+	// not an interpretation of it, which is what keeps it on the right side of
+	// the "no guessing from output" rule.
+	t.lastOutput = time.Now()
 	if t.attention != protocol.AttentionWorking || !bytes.Contains(data, []byte(promptMarker)) {
 		return nil
 	}
@@ -248,4 +295,51 @@ func (s *Server) handleMark(conn net.Conn, msg *protocol.Msg) bool {
 		return s.sendError(conn, "no live pane in "+where)
 	}
 	return s.sendMsg(conn, &protocol.Msg{Type: protocol.MsgActionOK})
+}
+
+// handleAck acknowledges a pane's alert without the client having to attach.
+func (s *Server) handleAck(conn net.Conn, msg *protocol.Msg) bool {
+	payload, err := protocol.PayloadAs[protocol.PayloadAck](msg)
+	if err != nil {
+		return s.sendError(conn, err.Error())
+	}
+	if n := s.terminals.Acknowledge(payload.Session, payload.Pane); n == 0 {
+		where := "session " + payload.Session
+		if payload.Pane != "" {
+			where += " pane " + payload.Pane
+		}
+		return s.sendError(conn, "nothing to acknowledge in "+where)
+	}
+	return s.sendMsg(conn, &protocol.Msg{Type: protocol.MsgActionOK})
+}
+
+// Acknowledge applies seen() to one pane, or to every live pane in the session
+// when pane is empty, and reports how many alerts it actually touched.
+//
+// It is exactly what attaching does — the point is only that you should not
+// have to visit a pane to say "noted". Panes with nothing outstanding are
+// skipped, so the count tells the caller whether the gesture meant anything.
+func (m *TerminalManager) Acknowledge(session, pane string) int {
+	session = sessionOrDefault(session)
+	m.mu.Lock()
+	var targets []*TerminalPTY
+	for _, t := range m.sessions {
+		if t.sessionName() != session || t.isDone() {
+			continue
+		}
+		if pane != "" && t.pane != pane {
+			continue
+		}
+		targets = append(targets, t)
+	}
+	m.mu.Unlock()
+
+	n := 0
+	for _, t := range targets {
+		if ev := t.seen(); ev != nil {
+			t.fire(ev)
+			n++
+		}
+	}
+	return n
 }

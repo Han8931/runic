@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,6 +80,11 @@ type TerminalManager struct {
 	// git worktree, when it owns one. Nil (or an empty result) means the pane
 	// inherits the daemon's working directory, the behavior without worktrees.
 	sessionDir func(session string) string
+	// sessionAgent resolves the command that starts a session's coding agent,
+	// for sessions created to host one. It runs in the session's *first* pane
+	// only: splitting a session is how you get a shell next to the agent, so a
+	// second copy of it there would be the opposite of what was asked.
+	sessionAgent func(session string) string
 }
 
 type TerminalPTY struct {
@@ -98,9 +104,17 @@ type TerminalPTY struct {
 	done    bool
 
 	// Self-reported attention state (`ru mark`), guarded by mu.
-	attention   protocol.Attention
-	note        string
-	since       time.Time
+	attention protocol.Attention
+	note      string
+	since     time.Time
+	// attnSeen marks an alert acknowledged by attaching to this pane. Only an
+	// error ever carries it — waiting is cleared outright — so it reads as
+	// "still broken, but you know". Any fresh mark resets it.
+	attnSeen bool
+	// lastOutput is when the pane last produced bytes, used to spot an agent
+	// that claims to be working but has gone silent. Seeded at spawn so the
+	// age is measured from the pane's birth rather than from the zero time.
+	lastOutput  time.Time
 	onAttention func(AttentionEvent)
 }
 
@@ -116,14 +130,20 @@ func NewTerminalManager() *TerminalManager {
 	}
 }
 
-func terminalKey(session, pane string) string {
+// sessionOrDefault applies the one naming rule every session lookup shares: an
+// unnamed session is "default".
+func sessionOrDefault(session string) string {
 	if session == "" {
-		session = "default"
+		return "default"
 	}
+	return session
+}
+
+func terminalKey(session, pane string) string {
 	if pane == "" {
 		pane = "main"
 	}
-	return session + "\x00" + pane
+	return sessionOrDefault(session) + "\x00" + pane
 }
 
 func (m *TerminalManager) GetOrCreate(session, pane string, cols, rows int) (*TerminalPTY, error) {
@@ -136,13 +156,21 @@ func (m *TerminalManager) GetOrCreate(session, pane string, cols, rows int) (*Te
 	}
 	delete(m.sessions, key)
 	resolve := m.sessionDir
+	resolveAgent := m.sessionAgent
+	// Resolved before the pane is registered, so "the session's first pane" is
+	// decided against the panes that existed when this one was asked for.
+	firstPane := !m.hasLivePaneLocked(sessionOrDefault(session))
 	m.mu.Unlock()
 
 	dir := ""
 	if resolve != nil {
 		dir = resolve(session)
 	}
-	t, err := startTerminalPTY(session, pane, cols, rows, dir)
+	agentCmd := ""
+	if firstPane && resolveAgent != nil {
+		agentCmd = resolveAgent(sessionOrDefault(session))
+	}
+	t, err := startTerminalPTY(session, pane, cols, rows, dir, agentCmd)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +185,14 @@ func (m *TerminalManager) GetOrCreate(session, pane string, cols, rows int) (*Te
 	t.onAttention = m.onAttention
 	m.sessions[key] = t
 	m.mu.Unlock()
+
+	// Starting an agent is a fact, not a guess, so the pane reports `working`
+	// from the moment it is launched: an agent session is in the Agents list
+	// immediately instead of waiting for the tool's first `ru mark`. The OSC 133
+	// prompt marker clears it when the agent exits and the shell comes back.
+	if agentCmd != "" {
+		t.fire(t.setAttention(protocol.AttentionWorking, "started "+agentCmd, time.Now()))
+	}
 
 	go func() {
 		t.readLoop()
@@ -185,13 +221,15 @@ func (m *TerminalManager) ListAll() []protocol.TerminalInfo {
 	var out []protocol.TerminalInfo
 	for _, t := range m.sessions {
 		if !t.isDone() {
-			a, note, since := t.Attention()
+			a, note, since, seen := t.Attention()
 			out = append(out, protocol.TerminalInfo{
-				Session:   t.sessionName(),
-				Pane:      t.pane,
-				Attention: a,
-				Note:      note,
-				Since:     since,
+				Session:    t.sessionName(),
+				Pane:       t.pane,
+				Attention:  a,
+				Note:       note,
+				Since:      since,
+				Seen:       seen,
+				LastOutput: t.lastOutputAt(),
 			})
 		}
 	}
@@ -238,13 +276,34 @@ func (m *TerminalManager) SetSessionDirResolver(fn func(session string) string) 
 	m.mu.Unlock()
 }
 
-func startTerminalPTY(session, pane string, cols, rows int, dir string) (*TerminalPTY, error) {
+// SetSessionAgentResolver installs the lookup that maps a session to the
+// command starting its coding agent (empty for an ordinary session).
+func (m *TerminalManager) SetSessionAgentResolver(fn func(session string) string) {
+	m.mu.Lock()
+	m.sessionAgent = fn
+	m.mu.Unlock()
+}
+
+// hasLivePane reports whether the session already holds a pane, so GetOrCreate
+// can tell the session's first pane — the one an agent belongs in — from a
+// later split. Callers hold m.mu.
+func (m *TerminalManager) hasLivePaneLocked(session string) bool {
+	for _, t := range m.sessions {
+		if t != nil && !t.isDone() && t.sessionName() == session {
+			return true
+		}
+	}
+	return false
+}
+
+// startTerminalPTY starts one pane's shell. A non-empty agentCmd is the coding
+// agent to run in it: the shell starts normally and launches the agent from its
+// own rc, so the pane keeps its prompt marker and survives the agent exiting.
+func startTerminalPTY(session, pane string, cols, rows int, dir, agentCmd string) (*TerminalPTY, error) {
 	if !ptySupported {
 		return nil, fmt.Errorf("interactive panes need a PTY, which is not available on %s", runtime.GOOS)
 	}
-	if session == "" {
-		session = "default"
-	}
+	session = sessionOrDefault(session)
 	if pane == "" {
 		pane = "main"
 	}
@@ -252,7 +311,7 @@ func startTerminalPTY(session, pane string, cols, rows int, dir string) (*Termin
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	cmd, rcDir := terminalShellCommand(shell)
+	cmd, rcDir, rcLaunchesAgent := terminalShellCommand(shell, agentCmd)
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()
@@ -260,6 +319,12 @@ func startTerminalPTY(session, pane string, cols, rows int, dir string) (*Termin
 	// RUNIC_PANE lets a process in the pane report its own attention state back
 	// with `ru mark` without having to guess which pane it is in.
 	cmd.Env = append(env, "RUNIC_SESSION="+session, "RUNIC_PANE="+pane)
+	if rcLaunchesAgent {
+		// The rc reads the command from here rather than having it baked in, so
+		// the generated file carries no user-supplied text, and unsets it before
+		// running so a nested shell sourcing the same rc does not relaunch.
+		cmd.Env = append(cmd.Env, "RUNIC_AGENT_CMD="+agentCmd)
+	}
 	// A worktree session's panes open in its own checkout. A stale path (the
 	// directory removed behind the daemon's back) must not make the pane
 	// unstartable, so fall back to the daemon's cwd.
@@ -276,14 +341,24 @@ func startTerminalPTY(session, pane string, cols, rows int, dir string) (*Termin
 		}
 		return nil, err
 	}
+	// A shell runic writes no rc for (sh, fish, …) gets the command typed in
+	// instead. Less certain than the rc — a shell that discards type-ahead on
+	// startup drops it — but those shells have no prompt marker either, so this
+	// is the degraded path by construction.
+	if agentCmd != "" && !rcLaunchesAgent {
+		if _, err := ptmx.Write([]byte(agentCmd + "\n")); err != nil {
+			log.Printf("session %s pane %s: start agent: %v", session, pane, err)
+		}
+	}
 	return &TerminalPTY{
-		session: session,
-		pane:    pane,
-		ptmx:    ptmx,
-		cmd:     cmd,
-		rcDir:   rcDir,
-		clients: make(map[chan []byte]bool),
-		backlog: newByteRing(terminalBacklogLimit),
+		session:    session,
+		pane:       pane,
+		ptmx:       ptmx,
+		cmd:        cmd,
+		rcDir:      rcDir,
+		clients:    make(map[chan []byte]bool),
+		backlog:    newByteRing(terminalBacklogLimit),
+		lastOutput: time.Now(),
 	}, nil
 }
 
@@ -404,24 +479,45 @@ func (m *TerminalManager) DropSession(session string) {
 	}
 }
 
-func terminalShellCommand(shell string) (*exec.Cmd, string) {
+// terminalShellCommand builds the pane's shell command, with the generated rc
+// that emits the prompt marker and — when agent is non-empty — launches the
+// session's coding agent. The third result reports whether the rc will do that
+// launching, so the caller knows not to type the command in instead.
+func terminalShellCommand(shell, agent string) (*exec.Cmd, string, bool) {
 	name := filepath.Base(shell)
 	switch name {
 	case "zsh":
-		if rcDir, err := setupTerminalZshRC(); err == nil {
+		if rcDir, err := setupTerminalZshRC(agent != ""); err == nil {
 			cmd := exec.Command(shell)
 			cmd.Env = append(os.Environ(), "ZDOTDIR="+rcDir, "RUNIC_ORIG_ZDOTDIR="+origZDOTDIR())
-			return cmd, rcDir
+			return cmd, rcDir, agent != ""
 		}
 	case "bash":
-		if rcDir, rcFile, err := setupTerminalBashRC(); err == nil {
-			return exec.Command(shell, "--rcfile", rcFile, "-i"), rcDir
+		if rcDir, rcFile, err := setupTerminalBashRC(agent != ""); err == nil {
+			return exec.Command(shell, "--rcfile", rcFile, "-i"), rcDir, agent != ""
 		}
 	}
-	return exec.Command(shell), ""
+	return exec.Command(shell), "", false
 }
 
-func setupTerminalZshRC() (string, error) {
+// agentLaunchRC is the rc tail that starts the session's agent once the shell
+// is fully initialized — after the user's own rc, so the agent sees the PATH
+// and environment they would get by typing the command themselves.
+//
+// The command arrives in RUNIC_AGENT_CMD and is unset before running, so a
+// shell started *inside* the pane (which re-sources this rc through ZDOTDIR)
+// gets a plain prompt rather than a second agent. It is echoed first because a
+// pane that springs to life running something unannounced reads as a glitch.
+const agentLaunchRC = `if [ -n "$RUNIC_AGENT_CMD" ]; then
+  __runic_agent_cmd="$RUNIC_AGENT_CMD"
+  unset RUNIC_AGENT_CMD
+  printf '\033[2m$ %s\033[0m\n' "$__runic_agent_cmd"
+  eval "$__runic_agent_cmd"
+  unset __runic_agent_cmd
+fi
+`
+
+func setupTerminalZshRC(launchAgent bool) (string, error) {
 	rcDir, err := os.MkdirTemp("", "runic-zsh-*")
 	if err != nil {
 		return "", err
@@ -438,6 +534,9 @@ function __runic_prompt_marker() {
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd __runic_prompt_marker
 `
+	if launchAgent {
+		rc += agentLaunchRC
+	}
 	if err := os.WriteFile(filepath.Join(rcDir, ".zshrc"), []byte(rc), 0600); err != nil {
 		os.RemoveAll(rcDir)
 		return "", err
@@ -445,7 +544,7 @@ add-zsh-hook precmd __runic_prompt_marker
 	return rcDir, nil
 }
 
-func setupTerminalBashRC() (string, string, error) {
+func setupTerminalBashRC(launchAgent bool) (string, string, error) {
 	rcDir, err := os.MkdirTemp("", "runic-bash-*")
 	if err != nil {
 		return "", "", err
@@ -464,6 +563,9 @@ else
   PROMPT_COMMAND="__runic_prompt_marker"
 fi
 `
+	if launchAgent {
+		rc += agentLaunchRC
+	}
 	if err := os.WriteFile(rcFile, []byte(rc), 0600); err != nil {
 		os.RemoveAll(rcDir)
 		return "", "", err
@@ -491,6 +593,13 @@ func (t *TerminalPTY) setSessionName(name string) {
 	t.mu.Lock()
 	t.session = name
 	t.mu.Unlock()
+}
+
+// lastOutputAt reports when the pane last produced output.
+func (t *TerminalPTY) lastOutputAt() time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastOutput
 }
 
 func (t *TerminalPTY) isDone() bool {
