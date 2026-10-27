@@ -209,7 +209,37 @@ The Sessions pane has two: **Spaces** and **Agents**.
   longest sorts first. The tab carries a `2!` badge for panes needing you, so a
   blocked agent is visible from the Spaces view.
 
-The Jobs pane has a **session tab row at the top**, with **All sessions** for
+The main pane has two **primary views** — **Agents** and **Jobs** — on one tab
+strip, with Jobs' state filters after them (they belong *to* Jobs rather than
+being peers of it, and nothing shifts position when you switch). `a` reaches
+Agents in one keystroke; the Agents tab carries a `2!` badge so a blocked agent
+is visible from the Jobs view.
+
+```
+  Jobs   Agents 2!                                 │  Agents 2   Jobs 3   │ All 3  Running …
+  AGENT            STATE       FOR   KIND   BRANCH
+! lint             ERROR       50s   codex  chore/lint
+   "exit 1: 3 lint failures in internal/tui"
+! review-api       WAITING     8m    claude feature/api
+   "Should this endpoint require authentication?"
+  default          QUIET       22m
+   no output since 22m ago
+  fix-tests        ⠋ WORKING   2m    claude feature/fix
+   last output 3s ago
+```
+
+Each agent gets **two lines**: what it is, and what it asked. That second line
+is the whole reason the view exists — in the 26-column sidebar a name, a state
+and an age already fill the row, so the question you actually have to answer
+had nowhere to go. `c` compacts to one line each for triaging many at once.
+`⏎` attaches, `!` acknowledges, `e` edits the hosting session.
+
+A **QUIET** agent is one claiming to work while printing nothing for five
+minutes. That is the single failure an agent cannot report — being wedged is not
+a state anything gets to announce — so it is derived from the output stream and
+phrased as a doubt rather than a failure.
+
+The Jobs view has a **session tab row at the top**, with **All sessions** for
 the combined queue. Click a session or use `[` / `]` to select it; the job
 list and status counts are scoped to that session. Below it are **All**,
 **Running**, **Queued**, **Done**, and **Failed**
@@ -347,7 +377,9 @@ on the management screen for a key/command cheatsheet.
 | `h` / `l` | Collapse / toggle a node in the sidebar (Spaces view; the Agents list is flat) |
 | `m` / `A` | Open the sidebar action menu / toggle sidebar zoom |
 | `e` | Edit the cursor row in one box — a job row: job name, its session's name/group, and its timeout (empty = none); a session row: name + group |
-| `n` / `a` | Create a new session (opens the edit box; you land in it) — name, group, **agent**, and branch |
+| `n` | Create a new session (opens the edit box; you land in it) — name, group, **agent**, and branch |
+| `a` | Switch the main pane to the **Agents** view |
+| `c` | In Agents: toggle one-line / two-line rows |
 | `sg` / `si` / `ss` / `st` | Sort by group / id / state / time; the same chord again (or `R`) reverses |
 | `/` | Filter by command/label/session (`Enter` apply, `Esc` cancel) |
 | `:` | Command line (see below) |

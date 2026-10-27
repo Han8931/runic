@@ -339,13 +339,17 @@ func (m model) renderDetailPanel(w, h int) []string {
 // job rows — or, while a modal is open, that modal in place of the table.
 func (m model) renderListPanel(w, h int, overlay bool) []string {
 	inner := w - 2
-	strip, _ := m.renderTabStrip(inner)
+	strip, _, _ := m.renderMainTabStrip(inner)
 	lines := []string{strip}
 	// Column 0 of the list is a cursor gutter, like the sidebar's.
 	cols := computeJobColumns(max(1, inner-1), m.jobsAnyTimeout())
-	if overlay {
+	switch {
+	case overlay:
 		lines = append(lines, m.mgmtBodyLines(max(1, h-3), inner, cols)...)
-	} else {
+	case m.jobs.main == mainAgents:
+		lines = append(lines, m.agentViewHeader(inner))
+		lines = append(lines, m.renderAgentView(inner, max(1, h-4))...)
+	default:
 		lines = append(lines, jobsHeaderStyle.Render(fitToWidth(" "+m.jobsHeaderRow(cols), inner)))
 		lines = append(lines, m.mgmtBodyLines(max(1, h-4), inner, cols)...)
 	}
@@ -1016,6 +1020,9 @@ func (m model) jobsHints() []keyHint {
 	}
 	if m.jobs.picker.active || m.jobs.tree.menu.active {
 		return []keyHint{{key: "j/k", label: "move"}, {key: "enter", label: "choose"}, {key: "esc", label: "close"}}
+	}
+	if m.jobs.main == mainAgents && !(m.jobs.tree.show && m.jobs.tree.focus) {
+		return m.agentViewHints()
 	}
 	if m.jobs.tree.show && m.jobs.tree.focus {
 		// The Agents view is flat, so the fold and group-management keys are

@@ -268,6 +268,49 @@ and diamonds." The cause was not any single glyph but the count: `● ◐ × ◆
 - [x] Dropped the `⊕` worktree mark from rows. The branch is in the Details
       panel and the pane status bar, which is where you look when you care.
 
+### Priority 4h — the agent workspace — DONE
+Acting on a second external review, on the `feat/agent-workspace` branch. Its
+central point was right: too many elements got the same treatment, so the screen
+never said where you are, what matters, or what to do next.
+
+- [x] **Agents is a primary view of the main pane**, beside Jobs, with the job
+      state tabs demoted to filters *within* Jobs on the same strip — they
+      belong to it rather than being peers of it, and nothing shifts position
+      when the view changes. `a` reaches it in one keystroke; the tab carries a
+      needs-you badge so a blocked agent is visible from Jobs.
+- [x] **Two-line rows**: what the agent is, then what it asked. This is the
+      whole reason the view exists — at 26 sidebar columns a name, a state and
+      an age already fill the row, so the question had nowhere to go. `c`
+      compacts to one line for triaging many at once.
+- [x] **Stall detection.** A pane claiming to work while printing nothing for
+      five minutes reads QUIET and sorts above the healthy ones. Derived from
+      the byte stream rather than reported, so it is phrased as a doubt: a slow
+      build must not be branded broken.
+- [x] **Output snippets** (`MsgTerminalTail`, protocol 14). "done" answers
+      nothing — the Stop hook fires as the agent exits and carries no message —
+      so the inspector shows the tail of what the pane printed. Read from the
+      backlog ring the daemon already keeps for attach replay, cleaned up
+      server-side because a detached client has no terminal emulator for the
+      pane. Fetched per selection, not per poll.
+- [x] **The inspector is ordered by what you need to decide**: state, request,
+      output, what to press, then provenance. It used to lead with the session
+      and pane — true, but you already know which row you are on — and truncate
+      the question to one line, which is the one thing you cannot act without.
+      It wraps now.
+- [x] **Pane zoom** (`^B z`) and a **`^B` prefix menu** that lists what the
+      prefix can do, clickable like the rest of the hint bar.
+- [x] `keyHint.keep`, because the hint bar drops from the end and help/quit/
+      cancel are conventionally listed last — the first to go exactly when
+      someone is lost.
+- [ ] Not taken: the review's three-column dashboard (workspaces + agents +
+      jobs at once). At 80 columns that is ~26 each, which is precisely the
+      width that made agent requests unreadable to begin with. The summary
+      strip it proposed is a clear win and is still open.
+- [ ] Not taken: reducing borders and nested containers, and a command palette.
+      Both are agreed in principle; the first was explicitly deferred when the
+      icon work was scoped, and the second is the larger version of the prefix
+      menu that just landed.
+
 ### Priority 5 — the agent as a first-class object
 Partly done. A session now *has* an agent — a kind it was created to host, which
 the daemon starts in its first pane — so "which agent is this?" and "is this an

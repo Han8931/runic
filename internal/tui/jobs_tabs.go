@@ -1,11 +1,6 @@
 package tui
 
 import (
-	"fmt"
-	"strings"
-
-	"github.com/charmbracelet/lipgloss"
-
 	"github.com/han/runic/internal/protocol"
 )
 
@@ -119,37 +114,7 @@ type tabSpan struct {
 	start, end int // [start, end)
 }
 
-// renderTabStrip draws the Jobs pane header in gorae's style: the active tab is
-// a filled chip carrying its job count, the rest are plain names. The Failed tab
-// keeps its count visible even when inactive, in red, because a failure is the
-// one thing worth noticing from another view.
-func (m model) renderTabStrip(width int) (string, []tabSpan) {
-	var b strings.Builder
-	var spans []tabSpan
-	col := 0
-	write := func(s string) {
-		b.WriteString(s)
-		col += lipgloss.Width(s)
-	}
-	write(" ")
-	for t := tabAll; t < numJobsTabs; t++ {
-		if t > tabAll {
-			write("  ")
-		}
-		start := col
-		switch {
-		case t == m.jobs.tab:
-			write(chipStyle.Render(fmt.Sprintf(" %s %d ", t.label(), m.tabCount(t))))
-		case t == tabFailed:
-			if n := m.tabCount(t); n > 0 {
-				write(tabInactiveStyle.Render(t.label()+" ") + finishedErrStyle.Render(fmt.Sprint(n)))
-			} else {
-				write(tabInactiveStyle.Render(t.label()))
-			}
-		default:
-			write(tabInactiveStyle.Render(t.label()))
-		}
-		spans = append(spans, tabSpan{tab: t, start: start, end: col})
-	}
-	return fitToWidth(b.String(), width), spans
-}
+// The Jobs pane header is drawn by renderMainTabStrip (agents_view.go), which
+// puts the primary views first and these state filters after them. There is no
+// second renderer for this strip: one that is never installed drifts from the
+// one that is, and then a click lands on whatever is actually there.

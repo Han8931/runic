@@ -197,6 +197,14 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return nm, cmd
 	}
 
+	// The main pane is showing agents, not jobs: its rows are panes, so the job
+	// actions below (kill, rerun, urgent) have nothing to act on.
+	if m.jobs.main == mainAgents {
+		if nm, cmd, done := m.handleAgentViewKey(msg); done {
+			return nm, cmd
+		}
+	}
+
 	// Complete a pending two-key motion (gg jumps to top; sg/si/ss/st sort).
 	if m.jobs.pending != 0 {
 		op := m.jobs.pending
@@ -300,9 +308,15 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r, ok := m.jobsCursorRow(); ok {
 			return m.openJobEditForm(r.job, r.group), textinput.Blink
 		}
-	case "n", "a":
+	case "n":
 		// Create a new session via the edit box (blank form).
 		return m.openSessionForm(true, "", ""), textinput.Blink
+	case "a":
+		// The Agents view, in one keystroke. `a` used to be a second way to say
+		// `n`, which nobody needs; reaching the agent list meant focusing the
+		// sidebar and then rolling its tabs.
+		(&m).switchMainView(mainAgents)
+		return m, nil
 	case "x":
 		if ids := m.jobsActionIDs(); len(ids) > 0 {
 			m.jobs.visual = false
@@ -423,19 +437,40 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Y == mgmtTabStripLine {
-			// A click on a tab switches to it.
-			_, spans := m.renderTabStrip(l.listW - 2)
+			// A click lands on a primary view or, within Jobs, on one of its
+			// state filters.
+			_, jobSpans, mainSpans := m.renderMainTabStrip(l.listW - 2)
 			x := msg.X - l.listX - 1
-			for _, sp := range spans {
+			for _, sp := range mainSpans {
+				if x >= sp.start && x < sp.end {
+					(&m).switchMainView(sp.view)
+					return m, nil
+				}
+			}
+			for _, sp := range jobSpans {
 				if x >= sp.start && x < sp.end {
 					(&m).switchTab(sp.tab)
-					break
+					return m, nil
 				}
 			}
 			return m, nil
 		}
 		top := m.mgmtBodyTopLine()
 		if msg.Y < top || msg.Y >= top+m.jobsBodyHeight() {
+			return m, nil
+		}
+		if m.jobs.main == mainAgents {
+			m.jobs.tree.focus = false
+			idx := m.jobs.agentOffset + (msg.Y-top)/m.agentRowHeight()
+			rows := m.agentViewRows()
+			if idx < 0 || idx >= len(rows) {
+				return m, nil
+			}
+			m.jobs.agentCursor = idx
+			r := rows[idx]
+			if (&m).doubleClick("agent|" + r.session + "|" + r.pane) {
+				return m.openSessionPane(r.session, r.pane)
+			}
 			return m, nil
 		}
 		// Clicking the table hands it focus, like clicking a pane.

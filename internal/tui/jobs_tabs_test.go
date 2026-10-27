@@ -133,7 +133,7 @@ func TestJobsTabClick(t *testing.T) {
 	m := tabsModel()
 	m.jobs.tree.show = true
 	l := m.jobsLayout()
-	_, spans := m.renderTabStrip(l.listW - 2)
+	_, spans, _ := m.renderMainTabStrip(l.listW - 2)
 	target := spans[tabFailed]
 	nm, _ := m.handleMouse(tea.MouseMsg{
 		X: l.listX + 1 + target.start, Y: mgmtTabStripLine,

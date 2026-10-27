@@ -109,6 +109,12 @@ type jobsView struct {
 	commanding bool     // the ':' command line is open
 	helping    bool     // the help overlay is open
 	help       helpView // its scroll position
+	// main selects the main pane's primary view: the job table, or the agent
+	// list. The state tabs below are a filter within Jobs, not a peer of it.
+	main        mainView
+	density     agentDensity
+	agentCursor int
+	agentOffset int
 
 	visual bool // visual (multi-select) mode active
 	anchor int  // row index where the visual selection started
