@@ -77,6 +77,7 @@ var paneCommands = []commandSpec{
 	{offer: []string{"next"}, alts: []string{"o", "next-pane"}},
 	{offer: []string{"quit"}, alts: []string{"q"}},
 	{offer: []string{"vs", "vsplit"}, alts: []string{"vsp"}},
+	{offer: []string{"zoom"}, alts: []string{"z"}},
 }
 
 // completionState tracks an in-progress completion so repeated tabs cycle

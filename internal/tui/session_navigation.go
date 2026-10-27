@@ -173,6 +173,16 @@ func (m model) handleSessionMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// before the sidebar, which spans the rows above but would otherwise swallow
 	// a click on the left half of the footer.
 	if msg.Y == m.height-1 && m.inputMode == inputNone && msg.Button == tea.MouseButtonLeft {
+		if m.ctrlBPressed {
+			_, spans := m.prefixMenuLine(m.width)
+			if h, ok := hintAt(spans, msg.X); ok {
+				if nm, cmd, handled := m.pressHint(h); handled {
+					return nm, cmd
+				}
+			}
+			m.ctrlBPressed = false
+			return m, nil
+		}
 		if _, spans := m.footerSpans(); spans != nil {
 			if h, ok := hintAt(spans, msg.X); ok {
 				if nm, cmd, handled := m.pressHint(h); handled {
@@ -228,8 +238,8 @@ func (m model) handleSessionMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	// A click in the terminal focuses the corresponding split pane.
 	w, h := m.termRegionSize()
-	if root := m.activeRoot(); root != nil {
-		leaves, _ := root.layout(rect{x: 0, y: 0, w: w - 2, h: h - 2})
+	{
+		leaves, _ := m.termLeaves(w-2, h-2)
 		for _, leaf := range leaves {
 			r := leaf.rect
 			x, y := msg.X-offset-1, msg.Y-1

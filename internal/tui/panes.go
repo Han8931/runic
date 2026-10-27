@@ -151,6 +151,9 @@ func persistLayoutCmd(session string, root *paneNode) tea.Cmd {
 
 func (m model) activateSession(session string) (model, tea.Cmd) {
 	m.jobs.tree.focus = false
+	// Zoom belongs to a layout, not to the client: arriving in another session
+	// zoomed onto a pane you cannot see would be a trap.
+	m.paneZoom = false
 	if session == "" {
 		session = "default"
 	}
@@ -196,6 +199,9 @@ func (m *model) syncFocusShell() {
 // splitFocused splits the focused pane in half, spawning a fresh shell for the
 // active session in the new pane and moving focus to it (tmux behavior).
 func (m model) splitFocused(dir splitDir) (model, tea.Cmd) {
+	// Splitting while zoomed un-zooms, as in tmux: you asked for two panes, so
+	// showing one of them full-screen is not what you meant.
+	m.paneZoom = false
 	root := m.activeRoot()
 	if root == nil || m.focusPane == nil {
 		return m, nil
@@ -235,6 +241,9 @@ func (m model) splitFocused(dir splitDir) (model, tea.Cmd) {
 // closeFocused kills the focused pane's shell and collapses the layout. The
 // last remaining pane is never removed (use q to quit instead).
 func (m model) closeFocused() (model, tea.Cmd) {
+	// The zoomed pane is the one being closed, and zoom on whatever inherits
+	// focus would be a layout the user never asked for.
+	m.paneZoom = false
 	root := m.activeRoot()
 	if root == nil || m.focusPane == nil {
 		return m, nil
@@ -363,6 +372,24 @@ func (m model) paneSpawnSize() (cols, rows int) {
 
 // resizeShell resizes every pane in the active session's layout to match its
 // current tiled rectangle.
+// termLeaves lays out the active session's panes in an iw×ih region — or, when
+// zoomed, gives the whole region to the focused pane alone.
+//
+// Both the renderer and the PTY resizer go through here. Zoom that only changed
+// the drawing would leave the shell sized for its old rectangle, so a
+// full-screen agent would redraw into a corner of the pane it was given.
+func (m model) termLeaves(iw, ih int) ([]leafRect, []separator) {
+	root := m.activeRoot()
+	if root == nil {
+		return nil, nil
+	}
+	area := rect{x: 0, y: 0, w: iw, h: ih}
+	if m.paneZoom && m.focusPane != nil {
+		return []leafRect{{node: m.focusPane, rect: area}}, nil
+	}
+	return root.layout(area)
+}
+
 func (m model) resizeShell() {
 	root := m.activeRoot()
 	if root == nil {
@@ -376,7 +403,7 @@ func (m model) resizeShell() {
 	if ih < 1 {
 		ih = 1
 	}
-	leaves, _ := root.layout(rect{x: 0, y: 0, w: iw, h: ih})
+	leaves, _ := m.termLeaves(iw, ih)
 	for _, lr := range leaves {
 		sh := lr.node.shell
 		if sh == nil {

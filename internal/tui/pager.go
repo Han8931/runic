@@ -350,8 +350,8 @@ func (m model) renderPager(w, h int) string {
 		lines = append(lines, fitToWidth(inputStyle.Render("/")+m.textInput.View(), w))
 	} else {
 		hintBar, _ := renderHintBar([]keyHint{
-			{"j/k", "scroll"}, {"gg/G", "top/bottom"}, {"^d/^u", "half page"},
-			{"/", "search"}, {"n", "next match"}, {"i", "job info"}, {"q", "back"},
+			{key: "j/k", label: "scroll"}, {key: "gg/G", label: "top/bottom"}, {key: "^d/^u", label: "half page"},
+			{key: "/", label: "search"}, {key: "n", label: "next match"}, {key: "i", label: "job info"}, {key: "q", label: "back"},
 		}, w)
 		lines = append(lines, hintBar)
 	}

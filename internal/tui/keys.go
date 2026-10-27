@@ -165,6 +165,17 @@ func (m model) handleCtrlB(msg tea.KeyMsg) (model, bool, tea.Cmd) {
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			nm, cmd := m.selectSessionTab(int(key[0] - '0'))
 			return nm, true, cmd
+		case "z":
+			// Ctrl+B z, as in tmux. A full-screen agent or a wall of test output
+			// is unreadable in a quarter of the screen, and splitting to read it
+			// then un-splitting loses the layout you had.
+			if m.paneCount() > 1 {
+				m.paneZoom = !m.paneZoom
+				m.resizeShell()
+				return m, true, clearScreenCmd()
+			}
+			m.status = "only one pane — nothing to zoom"
+			return m, true, nil
 		case "?":
 			// Help is only rendered over the management screen, so bring that up
 			// with the overlay already open. Without this, finding the key list
@@ -263,6 +274,14 @@ func (m model) executeCommand(input string) (tea.Model, tea.Cmd) {
 	case "o", "next", "next-pane":
 		nm, cmd := m.focusNextPane()
 		return nm, cmd
+	case "z", "zoom":
+		if m.paneCount() > 1 {
+			m.paneZoom = !m.paneZoom
+			m.resizeShell()
+			return m, clearScreenCmd()
+		}
+		m.status = "only one pane — nothing to zoom"
+		return m, nil
 	case "x", "close", "kill-pane":
 		nm, cmd := m.closeFocused()
 		return nm, cmd

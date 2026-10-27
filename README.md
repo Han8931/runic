@@ -470,12 +470,20 @@ live until you close them (`Ctrl+B x`) or the daemon is stopped (`ru -K`).
 | `Ctrl+B` arrows / `h` `k` `l` | — | Move focus to the adjacent pane |
 | `Ctrl+W` then `h`/`j`/`k`/`l` / `w` | — | Move / cycle focus between panes |
 | `Ctrl+B` `x` / `Ctrl+W` `q` | `x` / `close` | Close the focused pane (last pane is kept) |
+| `Ctrl+B` `z` | `z` / `zoom` | Zoom the focused pane to the whole region; again restores the layout. Splitting, closing a pane or switching session releases it |
+| `Ctrl+B` `?` | — | The help page |
 | `Ctrl+B` `d` | `detach` | Detach back to the management screen (shells persist) |
 | `Ctrl+B` `j` | `jobs` / `j` | Jump to the management screen |
 | `Ctrl+B` `c` | — | Open command mode |
 | `Ctrl+B` `q` | `q` / `quit` | Quit |
 
-The `Ctrl+B` prefix stays active until the next key. Press `Esc` after `Ctrl+B`
+**Pressing `Ctrl+B` lists what it can do.** The footer becomes a menu of the
+chords that apply right now — and those entries are clickable, like the rest of
+the hint bar. A chord you have to know already is not something anyone
+discovers, and the help page is the wrong place to learn it: you want it at the
+moment your fingers are on the prefix.
+
+The prefix stays active until the next key. Press `Esc` after `Ctrl+B`
 to cancel it. If the next key isn't a recognized chord, the buffered `Ctrl+B`
 is forwarded to the focused shell, so shell shortcuts still work.
 

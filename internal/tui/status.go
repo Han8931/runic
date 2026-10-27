@@ -40,6 +40,11 @@ func (m model) footerSpans() (string, []hintSpan) {
 	case m.status != "":
 		left = append(left, barSegment{text: statusPair("MSG", val(m.status)), drop: 2})
 	}
+	if m.paneZoom {
+		// Zoom hides the other panes, so the one thing that must be on screen is
+		// the fact that they exist.
+		left = append(left, barSegment{text: " " + warnChipStyle.Render(" ZOOM ")})
+	}
 	// An agent blocking in *another* session is the case the alarm exists for,
 	// so it is never the thing that gets dropped.
 	if !m.alarm.alert.empty() {
@@ -50,17 +55,17 @@ func (m model) footerSpans() (string, []hintSpan) {
 
 	// Getting out of a session, reaching the session list, and finding the help
 	// are protected. Everything else here is a readout.
-	out := []keyHint{{"^B d", "detach"}, {"^B j", "jobs"}, {"^B ?", "help"}}
-	secondary := []keyHint{{"^B s", "sessions"}, {"^B |/-", "split"}}
+	out := []keyHint{{key: "^B d", label: "detach"}, {key: "^B j", label: "jobs"}, {key: "^B ?", label: "help"}}
+	secondary := []keyHint{{key: "^B s", label: "sessions"}, {key: "^B |/-", label: "split"}}
 	if m.jobs.tree.focus {
-		out = []keyHint{{"enter", "open"}, {"esc", "terminal"}}
-		secondary = []keyHint{{"n", "new"}, {"e", "edit/move"}, {"d", "delete"}, {"tab", "agents"}}
+		out = []keyHint{{key: "enter", label: "open"}, {key: "esc", label: "terminal"}}
+		secondary = []keyHint{{key: "n", label: "new"}, {key: "e", label: "edit/move"}, {key: "d", label: "delete"}, {key: "tab", label: "agents"}}
 	}
 	// Gated on the same list the chord walks (sessionNames, the daemon's whole
 	// catalog) — not just the sessions already open, or the hint would hide
 	// while the tabs on the border plainly offer somewhere to go.
 	if len(m.sessionNames()) > 1 {
-		secondary = append([]keyHint{{"^B n/p", "session"}}, secondary...)
+		secondary = append([]keyHint{{key: "^B n/p", label: "session"}}, secondary...)
 	}
 	outKeys, outSpans := statusKeys(out)
 	secKeys, secSpans := statusKeys(secondary)
@@ -208,6 +213,56 @@ func fitBar(width int, left, right []barSegment) (string, []hintSpan) {
 		spans[i].end += base
 	}
 	return fitToWidth(l+statusBarStyle.Render(strings.Repeat(" ", width-lw-rw))+r, width), spans
+}
+
+// ctrlBHints are the chords the prefix menu lists, in the order they are worth
+// knowing. Shown the moment Ctrl+B is pressed, so the terminal's controls are
+// discoverable when you reach for them rather than only in the help page.
+//
+// They are keyHints in the `^B x` form, which means the clickable hint bar can
+// dispatch them without knowing anything about chords.
+func (m model) ctrlBHints() []keyHint {
+	hints := []keyHint{
+		{key: "^B d", label: "detach"},
+		{key: "^B j", label: "jobs"},
+		{key: "^B s", label: "sessions"},
+	}
+	// Ordered by how often you reach for them, since the tail is what gets
+	// dropped on a narrow bar. Zoom and pane-switching beat splitting: you
+	// split once and then live with the layout.
+	if m.paneCount() > 1 {
+		hints = append(hints,
+			keyHint{key: "^B z", label: "zoom"},
+			keyHint{key: "^B o", label: "next pane"},
+		)
+	}
+	hints = append(hints,
+		keyHint{key: "^B |", label: "split right"},
+		keyHint{key: "^B -", label: "split down"},
+	)
+	if m.paneCount() > 1 {
+		hints = append(hints, keyHint{key: "^B x", label: "close pane"})
+	}
+	if len(m.sessionNames()) > 1 {
+		hints = append(hints, keyHint{key: "^B n/p", label: "next/prev session"})
+	}
+	return append(hints,
+		keyHint{key: "^B c", label: "command"},
+		keyHint{key: "^B ?", label: "help", keep: true},
+		keyHint{key: "esc", label: "cancel", keep: true},
+	)
+}
+
+// prefixMenuLine renders the Ctrl+B menu over the footer, with its click spans.
+func (m model) prefixMenuLine(width int) (string, []hintSpan) {
+	lead := warnChipStyle.Render(" ^B ") + " "
+	leadW := lipgloss.Width(lead)
+	bar, spans := renderHintBar(m.ctrlBHints(), max(0, width-leadW))
+	for i := range spans {
+		spans[i].start += leadW
+		spans[i].end += leadW
+	}
+	return fitToWidth(lead+bar, width), spans
 }
 
 // renderStatusBar lays left and right out on one full-width bar. When both

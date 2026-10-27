@@ -77,9 +77,15 @@ func (m model) View() string {
 	}
 
 	if m.inputMode == inputNone {
-		if m.jobs.confirm.kind != confirmNone || m.jobs.form.active || m.jobs.tree.menu.active {
+		switch {
+		case m.ctrlBPressed:
+			// The prefix is live: say what it can do. A chord you have to
+			// already know is not a feature anyone discovers.
+			line, _ := m.prefixMenuLine(m.width)
+			b.WriteString(line)
+		case m.jobs.confirm.kind != confirmNone || m.jobs.form.active || m.jobs.tree.menu.active:
 			b.WriteString(m.jobsFooterLine(m.width))
-		} else {
+		default:
 			b.WriteString(m.renderFooter())
 		}
 	}
@@ -107,18 +113,13 @@ func (m model) renderTermRegion(width, height int) []string {
 
 	if width >= 4 && height >= 3 {
 		iw, ih := width-2, height-2
-		root := m.activeRoot()
-		var leaves []leafRect
-		var seps []separator
+		leaves, seps := m.termLeaves(iw, ih)
 		focusRect := rect{}
 		haveFocus := false
-		if root != nil {
-			leaves, seps = root.layout(rect{x: 0, y: 0, w: iw, h: ih})
-			for _, lr := range leaves {
-				if lr.node == m.focusPane {
-					focusRect = lr.rect
-					haveFocus = true
-				}
+		for _, lr := range leaves {
+			if lr.node == m.focusPane {
+				focusRect = lr.rect
+				haveFocus = true
 			}
 		}
 

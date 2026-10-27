@@ -95,6 +95,11 @@ type model struct {
 	// against stacking timers. See spinner.go.
 	spinnerFrame int
 	spinnerOn    bool
+	// paneZoom gives the focused pane the whole region, tmux-style. A
+	// full-screen agent or a wall of test output is unreadable in a quarter of
+	// the screen, and splitting to read something then un-splitting to get the
+	// layout back loses the layout.
+	paneZoom bool
 
 	// tuiWatch is the TUI-registration connection; takenOver is set when the
 	// daemon displaced this TUI because a newer `ru` attached.

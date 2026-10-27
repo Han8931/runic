@@ -559,6 +559,7 @@ func (m model) helpLines(bodyH, inner int) []string {
 		row("^B n/p", "next / previous session tab"),
 		row("^B 1-9", "jump to the nth session tab"),
 		row("^B o", "cycle panes within the session"),
+		row("^B z", "zoom the focused pane (again restores)"),
 		row("^B d", "detach back here (panes keep running)"),
 		row("^B ?", "this help"),
 		row("!", "acknowledge an agent without attaching"),
@@ -892,7 +893,7 @@ func (m model) jobsFooterSpans(w int) (string, []hintSpan) {
 		return fitToWidth(inputStyle.Render(m.cmdInput.View()), w), nil
 	case m.jobs.confirm.kind != confirmNone:
 		lead := dangerChipStyle.Render(" CONFIRM ") + " " + finishedErrStyle.Render(m.confirmQuestion()) + "  "
-		return withLead(lead, []keyHint{{"y", "yes"}, {"n/esc", "cancel"}})
+		return withLead(lead, []keyHint{{key: "y", label: "yes"}, {key: "n/esc", label: "cancel"}})
 	}
 	if prefix, hints := m.pendingHints(); prefix != "" {
 		return withLead(warnChipStyle.Render(" "+prefix+"… ")+" ", hints)
@@ -901,7 +902,15 @@ func (m model) jobsFooterSpans(w int) (string, []hintSpan) {
 }
 
 // keyHint is one entry of the hint bar: a key cap followed by a short label.
-type keyHint struct{ key, label string }
+//
+// keep marks a hint that must survive a bar too narrow for all of them. The bar
+// drops from the end, so without it the hints that matter most when you are
+// lost — help, quit, cancel — are the first to go, being the ones conventionally
+// listed last.
+type keyHint struct {
+	key, label string
+	keep       bool
+}
 
 // hintSpan is where one hint landed on the rendered bar, so a click can be
 // resolved back to the key it advertises. See clickHintBar.
@@ -915,6 +924,18 @@ type hintSpan struct {
 // the bar clickable: it already lists exactly the keys that apply right now, so
 // turning those into targets gives a complete mouse path with no new UI.
 func renderHintBar(hints []keyHint, width int) (string, []hintSpan) {
+	hintWidth := func(h keyHint) int {
+		return lipgloss.Width(keyCapStyle.Render(" "+h.key+" ") + " " + keyLabelStyle.Render(h.label))
+	}
+	// Space the kept hints will need, held back from everything optional so an
+	// early hint cannot spend the room the last one depends on.
+	reserved := 0
+	for _, h := range hints {
+		if h.keep {
+			reserved += hintWidth(h) + 2
+		}
+	}
+
 	var b strings.Builder
 	var spans []hintSpan
 	used := 0
@@ -925,8 +946,14 @@ func renderHintBar(hints []keyHint, width int) (string, []hintSpan) {
 		if i > 0 {
 			sep = 2
 		}
+		if h.keep {
+			reserved -= cw + 2
+		} else if used+sep+cw+reserved > width {
+			// No room for this one *and* the kept hints still to come.
+			continue
+		}
 		if used+sep+cw > width {
-			break
+			continue
 		}
 		if i > 0 {
 			b.WriteString("  ")
@@ -945,11 +972,11 @@ func renderHintBar(hints []keyHint, width int) (string, []hintSpan) {
 func (m model) pendingHints() (string, []keyHint) {
 	switch m.jobs.pending {
 	case 's':
-		return "sort", []keyHint{{"g", "group"}, {"i", "id"}, {"s", "state"}, {"t", "time"}, {"any", "cancel"}}
+		return "sort", []keyHint{{key: "g", label: "group"}, {key: "i", label: "id"}, {key: "s", label: "state"}, {key: "t", label: "time"}, {key: "any", label: "cancel"}}
 	case 'g':
-		return "g", []keyHint{{"g", "top"}, {"any", "cancel"}}
+		return "g", []keyHint{{key: "g", label: "top"}, {key: "any", label: "cancel"}}
 	case ',':
-		return ",", []keyHint{{"n", "toggle session tree"}}
+		return ",", []keyHint{{key: "n", label: "toggle session tree"}}
 	}
 	return "", nil
 }
@@ -958,44 +985,46 @@ func (m model) pendingHints() (string, []keyHint) {
 // usefulness: the ones that don't fit are dropped from the end.
 func (m model) jobsHints() []keyHint {
 	if m.jobs.helping {
-		return []keyHint{{"any", "close help"}}
+		return []keyHint{{key: "any", label: "close help"}}
 	}
 	if m.jobs.form.active || m.jobs.settings.active {
-		return []keyHint{{"tab", "next field"}, {"enter", "save"}, {"esc", "cancel"}}
+		return []keyHint{{key: "tab", label: "next field"}, {key: "enter", label: "save"}, {key: "esc", label: "cancel"}}
 	}
 	if m.jobs.picker.active || m.jobs.tree.menu.active {
-		return []keyHint{{"j/k", "move"}, {"enter", "choose"}, {"esc", "close"}}
+		return []keyHint{{key: "j/k", label: "move"}, {key: "enter", label: "choose"}, {key: "esc", label: "close"}}
 	}
 	if m.jobs.tree.show && m.jobs.tree.focus {
 		// The Agents view is flat, so the fold and group-management keys are
 		// left out of its hints rather than advertised and then ignored.
 		if m.jobs.tree.tab == sideAgents {
 			return []keyHint{
-				{"j/k", "move"}, {"tab", "spaces"}, {"⏎", "attach"},
-				{"m", "menu"}, {"e", "edit"}, {"^w l", "jobs"},
-				{"A", "zoom"}, {"?", "help"}, {"q", "quit"},
+				{key: "j/k", label: "move"}, {key: "tab", label: "spaces"}, {key: "⏎", label: "attach"},
+				{key: "m", label: "menu"}, {key: "e", label: "edit"}, {key: "^w l", label: "jobs"},
+				{key: "A", label: "zoom"},
+				{key: "?", label: "help", keep: true}, {key: "q", label: "quit", keep: true},
 			}
 		}
 		return []keyHint{
-			{"j/k", "move"}, {"tab", "agents"}, {"l/h", "fold"}, {"⏎", "open"},
-			{"m", "menu"}, {"e", "edit"}, {"n", "new"}, {"d", "delete"},
-			{"^w l", "jobs"}, {"A", "zoom"}, {"?", "help"}, {"q", "quit"},
+			{key: "j/k", label: "move"}, {key: "tab", label: "agents"}, {key: "l/h", label: "fold"}, {key: "⏎", label: "open"},
+			{key: "m", label: "menu"}, {key: "e", label: "edit"}, {key: "n", label: "new"}, {key: "d", label: "delete"},
+			{key: "^w l", label: "jobs"}, {key: "A", label: "zoom"},
+			{key: "?", label: "help", keep: true}, {key: "q", label: "quit", keep: true},
 		}
 	}
 	if m.jobs.visual {
-		return []keyHint{{"j/k", "extend"}, {"x", "kill"}, {"r", "rerun"}, {"u", "urgent"}, {"d", "remove"}, {"esc", "cancel"}}
+		return []keyHint{{key: "j/k", label: "extend"}, {key: "x", label: "kill"}, {key: "r", label: "rerun"}, {key: "u", label: "urgent"}, {key: "d", label: "remove"}, {key: "esc", label: "cancel"}}
 	}
 	// `^w h` is listed early and named for its payoff: the sidebar's own tabs
 	// are only reachable once it has focus, and a user looking at the Agents
 	// tab from here has no other way to learn that.
 	hints := []keyHint{
-		{"j/k", "move"}, {"[/]", "session"}, {"tab", "status"}, {"^w h", "agents"}, {"⏎", "output"},
-		{"/", "filter"}, {":", "command"}, {"space", "select"}, {"s", "sort"},
-		{"x", "kill"}, {"r", "rerun"}, {"d", "remove"}, {"S", "sessions"},
-		{",n", "tree"}, {"?", "help"}, {"q", "quit"},
+		{key: "j/k", label: "move"}, {key: "[/]", label: "session"}, {key: "tab", label: "status"}, {key: "^w h", label: "agents"}, {key: "⏎", label: "output"},
+		{key: "/", label: "filter"}, {key: ":", label: "command"}, {key: "space", label: "select"}, {key: "s", label: "sort"},
+		{key: "x", label: "kill"}, {key: "r", label: "rerun"}, {key: "d", label: "remove"}, {key: "S", label: "sessions"},
+		{key: ",n", label: "tree"}, {key: "?", label: "help"}, {key: "q", label: "quit"},
 	}
 	if len(m.jobs.tagged) > 0 {
-		hints = append([]keyHint{{"esc", "clear selection"}}, hints...)
+		hints = append([]keyHint{{key: "esc", label: "clear selection"}}, hints...)
 	}
 	return hints
 }
