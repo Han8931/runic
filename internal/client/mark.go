@@ -29,6 +29,24 @@ func Mark(session, pane string, a protocol.Attention, note string) error {
 	return recvOK(c)
 }
 
+// Ack acknowledges a pane's alert without attaching to it: a waiting pane is
+// resolved, an errored one keeps its state and note but stops counting as
+// needing you. An empty pane acknowledges the whole session.
+func Ack(session, pane string) error {
+	c, err := Connect()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.Send(&protocol.Msg{
+		Type:    protocol.MsgAck,
+		Payload: protocol.PayloadAck{Session: session, Pane: pane},
+	}); err != nil {
+		return err
+	}
+	return recvOK(c)
+}
+
 // MarkTarget resolves which pane a `ru mark` applies to. Explicit arguments win;
 // otherwise it uses the RUNIC_SESSION / RUNIC_PANE pair the daemon puts in every
 // pane's environment, which is what lets an agent's hook report its own state

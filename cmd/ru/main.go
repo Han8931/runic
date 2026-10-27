@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"text/tabwriter"
 
+	"github.com/han/runic/internal/agent"
 	"github.com/han/runic/internal/cli"
 	"github.com/han/runic/internal/client"
 	"github.com/han/runic/internal/config"
@@ -39,6 +40,15 @@ func main() {
 		return
 	case cli.ActionServerMode:
 		runServer()
+		return
+	case cli.ActionAgentHooks:
+		// Printing a snippet is local work: it must not start a daemon, and must
+		// keep working against one from an older binary — being told to wire
+		// hooks up is exactly when you are least able to restart things.
+		if err := printAgentHooks(cmd.Agent); err != nil {
+			fmt.Fprintf(os.Stderr, "ru: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	case cli.ActionConfigList, cli.ActionConfigGet, cli.ActionConfigSet,
 		cli.ActionConfigEdit, cli.ActionConfigPath:
@@ -311,7 +321,13 @@ func dispatch(cmd *cli.Command) error {
 		fmt.Println(strings.Join(sessions, "\n"))
 		return nil
 	case cli.ActionSessionCreate:
-		return client.SessionCreateWorktree(cmd.Session, cmd.Worktree, cmd.Repo, cmd.Branch)
+		return client.SessionCreateSpec(client.SessionSpec{
+			Name:     cmd.Session,
+			Worktree: cmd.Worktree,
+			Repo:     cmd.Repo,
+			Branch:   cmd.Branch,
+			Agent:    cmd.Agent,
+		})
 	case cli.ActionSessionRename:
 		return client.SessionRename(cmd.Session, cmd.SessionArg)
 	case cli.ActionSessionDelete:
@@ -514,6 +530,20 @@ func doUpgrade() error {
 // doGC sweeps the daemon's current log directory for generated output files
 // that no live job references (typically left by jobs removed before file GC
 // existed, or by a queue reset without persistence).
+// printAgentHooks prints the self-reporting hook snippet for an agent kind.
+// Sessions runic starts are instrumented automatically; this is for an agent
+// you launched yourself, where runic never saw the command.
+func printAgentHooks(kind string) error {
+	if kind != "claude" {
+		return fmt.Errorf("no hook snippet known for %q — runic only knows Claude Code's hook format (try: ru agent hooks claude)", kind)
+	}
+	fmt.Println("# Add to .claude/settings.json so the agent reports itself to runic.")
+	fmt.Println("# Sessions created with `ru session create <n> --agent claude` already")
+	fmt.Println("# get these automatically and need no file.")
+	fmt.Println(agent.ClaudeHookSettingsIndented())
+	return nil
+}
+
 func doGC() error {
 	logdir, err := client.GetLogdir()
 	if err != nil {

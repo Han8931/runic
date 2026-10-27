@@ -40,11 +40,18 @@ Sessions:
                        current directory); --branch <b> and --repo <p> override
                        the defaults. The worktree is removed when the session is
                        deleted; its branch is kept.
+                       --agent <kind> (claude, codex, …) starts that coding agent
+                       in the session's first pane; see the 'agents' config key.
   session rename <o> <n> Rename a session
   session delete <n>   Delete a session (finished jobs only). A worktree with
                        uncommitted or untracked work is kept and the delete
                        refused; add --discard to throw that work away.
   session move <s> <g> Move a session to a group
+
+Agents:
+  agent hooks [kind]   Print the hook snippet that makes an agent report itself
+                       (Claude Code). Sessions started with --agent are already
+                       instrumented and need no file.
 
 Panes & attention:
   term ls              List live panes: session, pane, attention state

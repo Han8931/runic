@@ -34,20 +34,42 @@ func SessionList() ([]string, error) {
 }
 
 func SessionCreate(name string) error {
-	return SessionCreateWorktree(name, false, "", "")
+	return SessionCreateSpec(SessionSpec{Name: name})
 }
 
 // SessionCreateWorktree creates a session, optionally in a fresh git worktree on
-// its own branch. repo is the repository to branch from (the caller's working
-// directory when empty); branch defaults to the session name. The worktree
-// directory is chosen by the daemon and removed when the session is deleted.
+// its own branch.
 func SessionCreateWorktree(name string, worktree bool, repo, branch string) error {
-	if worktree && repo == "" {
+	return SessionCreateSpec(SessionSpec{
+		Name: name, Worktree: worktree, Repo: repo, Branch: branch,
+	})
+}
+
+// SessionSpec describes a session to create. Everything but Name is optional,
+// which is why this is a struct: a plain session, a worktree session and an
+// agent session differ only in which fields they fill.
+type SessionSpec struct {
+	Name string
+	// Worktree asks for an isolated git worktree on its own branch. Repo is the
+	// repository to branch from (the caller's working directory when empty);
+	// Branch defaults to the session name. The worktree directory is chosen by
+	// the daemon and removed when the session is deleted.
+	Worktree bool
+	Repo     string
+	Branch   string
+	// Agent names the coding agent the session hosts ("claude"), which the
+	// daemon starts in its first pane. An unknown kind fails the create.
+	Agent string
+}
+
+// SessionCreateSpec creates a session as described by spec.
+func SessionCreateSpec(spec SessionSpec) error {
+	if spec.Worktree && spec.Repo == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("determine working directory: %w", err)
 		}
-		repo = cwd
+		spec.Repo = cwd
 	}
 	c, err := Connect()
 	if err != nil {
@@ -58,10 +80,11 @@ func SessionCreateWorktree(name string, worktree bool, repo, branch string) erro
 	if err := c.Send(&protocol.Msg{
 		Type: protocol.MsgSessionCreate,
 		Payload: protocol.PayloadSession{
-			Name:     name,
-			Worktree: worktree,
-			Repo:     repo,
-			Branch:   branch,
+			Name:     spec.Name,
+			Worktree: spec.Worktree,
+			Repo:     spec.Repo,
+			Branch:   spec.Branch,
+			Agent:    spec.Agent,
 		},
 	}); err != nil {
 		return err

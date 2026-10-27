@@ -63,6 +63,7 @@ const (
 	ActionGC
 	ActionUpgrade
 	ActionMark
+	ActionAgentHooks
 )
 
 type Command struct {
@@ -99,6 +100,9 @@ type Command struct {
 	// Discard lets `session delete` throw away uncommitted work in the session's
 	// worktree. Without it, such a session is refused and its worktree kept.
 	Discard bool
+	// Agent asks `session create` to host a coding agent of that kind, started
+	// in the session's first pane.
+	Agent string
 
 	StoreOutput    bool
 	SeparateStderr bool
@@ -147,6 +151,9 @@ func Parse(args []string) (*Command, error) {
 	}
 	if args[0] == "mark" {
 		return parseMarkSubcommand(cmd, args[1:])
+	}
+	if args[0] == "agent" {
+		return parseAgentSubcommand(cmd, args[1:])
 	}
 	if args[0] == "gc" {
 		cmd.Action = ActionGC

@@ -7,6 +7,24 @@ import (
 	"github.com/han/runic/internal/protocol"
 )
 
+// parseAgentSubcommand handles `ru agent …`. For now it is only `hooks`: print
+// the self-reporting snippet for an agent runic did not start itself, which is
+// the one case the automatic instrumentation cannot cover.
+func parseAgentSubcommand(cmd *Command, args []string) (*Command, error) {
+	if len(args) == 0 || args[0] != "hooks" {
+		return nil, fmt.Errorf("usage: ru agent hooks [kind]")
+	}
+	cmd.Action = ActionAgentHooks
+	cmd.Agent = "claude"
+	if len(args) > 1 {
+		cmd.Agent = args[1]
+	}
+	if len(args) > 2 {
+		return nil, fmt.Errorf("agent hooks takes at most one kind")
+	}
+	return cmd, nil
+}
+
 func parseSessionSubcommand(cmd *Command, args []string) (*Command, error) {
 	if len(args) == 0 {
 		cmd.Action = ActionSessionList
@@ -42,6 +60,15 @@ func parseSessionSubcommand(cmd *Command, args []string) (*Command, error) {
 				}
 				cmd.Worktree = true
 				cmd.Repo = args[i]
+			// `--agent` starts a coding agent in the session's first pane. It
+			// does not imply --worktree: isolation is a separate decision, and
+			// an agent in the main checkout is a legitimate thing to want.
+			case "--agent", "-A":
+				i++
+				if i >= len(args) {
+					return nil, fmt.Errorf("--agent requires a kind (e.g. claude)")
+				}
+				cmd.Agent = args[i]
 			default:
 				return nil, fmt.Errorf("unknown session create option: %s", args[i])
 			}
