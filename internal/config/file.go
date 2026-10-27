@@ -63,6 +63,8 @@ var Keys = []Key{
 		Desc: "queue snapshot file ('none' disables; default: state dir)", IsPath: true},
 	{Name: "theme", EnvVar: "RUNIC_THEME", Default: "auto",
 		Desc: "TUI palette: auto (ask the terminal), light, or dark", Choices: []string{"auto", "light", "dark"}},
+	{Name: "agents", EnvVar: "RUNIC_AGENTS", Default: "",
+		Desc: "agent kinds to offer: kind=command, comma-separated (merges over the built-ins)"},
 }
 
 // ValidChoice reports whether v is allowed for k. Keys without Choices accept

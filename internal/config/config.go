@@ -17,6 +17,10 @@ type Config struct {
 	Logdir      string // job output directory; empty means TmpDir
 	Theme       string // TUI palette: "auto", "light" or "dark"
 	TmpDir      string
+	// Agents maps an agent kind ("claude") to the command that starts it in a
+	// session pane. Built-in defaults merged with the `agents` config key; see
+	// agents.go.
+	Agents map[string]string
 }
 
 // Load resolves the effective configuration (defaults < file < env < runtime).
@@ -58,6 +62,9 @@ func LoadDetailed() (*Config, []Setting, []string) {
 	if saveListDisabled(c.SaveList) {
 		c.SaveList = ""
 	}
+	agents, agentWarnings := parseAgents(get("agents"))
+	c.Agents = agents
+	warnings = append(warnings, agentWarnings...)
 
 	c.TmpDir = os.Getenv("TMPDIR")
 	if c.TmpDir == "" {
