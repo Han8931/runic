@@ -160,11 +160,15 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startPending(',')
 	}
 
-	// Tab / Shift+Tab roll the focused pane through its own views: the sidebar
-	// between Spaces and Agents, the table through All, Running, … Binding the
-	// key to the focused pane keeps one gesture for "next view" on a screen
-	// where both panes have tabs. ←/→ do the same, but only from the table —
-	// in the sidebar they stay fold keys.
+	// Tab / Shift+Tab roll the focused pane's *primary* views: the sidebar
+	// between Spaces and Agents, the main pane between Jobs and Agents. One
+	// gesture for "next view", wherever the focus is.
+	//
+	// Tab used to roll the job state filters from the main pane, which left the
+	// Jobs/Agents axis with no key at all — so once you were in Agents, Tab
+	// cycled filters you could not see and there was no way back short of the
+	// mouse. The filters are a level down from a view, and ←/→ already roll
+	// them, which is where they now live exclusively.
 	if !m.jobs.tree.menu.active {
 		treeFocused := m.jobs.tree.show && m.jobs.tree.focus
 		switch {
@@ -172,20 +176,22 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if treeFocused {
 				(&m).cycleSideTab(1)
 			} else {
-				(&m).cycleTab(1)
+				(&m).cycleMainView(1)
 			}
 			return m, nil
 		case key == "shift+tab":
 			if treeFocused {
 				(&m).cycleSideTab(-1)
 			} else {
-				(&m).cycleTab(-1)
+				(&m).cycleMainView(-1)
 			}
 			return m, nil
-		case key == "right" && !treeFocused:
+		// The state filters belong to Jobs, so they only answer while Jobs is
+		// the view being filtered.
+		case key == "right" && !treeFocused && m.jobs.main == mainJobs:
 			(&m).cycleTab(1)
 			return m, nil
-		case key == "left" && !treeFocused:
+		case key == "left" && !treeFocused && m.jobs.main == mainJobs:
 			(&m).cycleTab(-1)
 			return m, nil
 		}
@@ -427,6 +433,9 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Y == 0 {
+			if m.jobs.main != mainJobs {
+				return m, nil
+			}
 			_, spans := m.jobsSessionStrip(l.listW - 2)
 			for _, sp := range spans {
 				if msg.X-l.listX-1 >= sp.start && msg.X-l.listX-1 < sp.end {
@@ -443,6 +452,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			x := msg.X - l.listX - 1
 			for _, sp := range mainSpans {
 				if x >= sp.start && x < sp.end {
+					m.jobs.tree.focus = false
 					(&m).switchMainView(sp.view)
 					return m, nil
 				}

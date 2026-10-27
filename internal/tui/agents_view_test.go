@@ -273,6 +273,76 @@ func TestMainTabClicks(t *testing.T) {
 	}
 }
 
+func TestReturnToJobs(t *testing.T) {
+	for _, key := range []tea.KeyType{tea.KeyTab, tea.KeyShiftTab} {
+		m := agentsViewModel()
+		got, _ := m.handleJobsKey(tea.KeyMsg{Type: key})
+		if got.(model).jobs.main != mainJobs {
+			t.Fatalf("%v did not return to Jobs", key)
+		}
+	}
+	for _, width := range []int{60, 110, 160} {
+		m := agentsViewModel()
+		m.width = width
+		m.jobs.tree.focus = true
+		l := m.jobsLayout()
+		_, _, spans := m.renderMainTabStrip(l.listW - 2)
+		for _, sp := range spans {
+			if sp.view != mainJobs {
+				continue
+			}
+			got, _ := m.handleMouse(leftClick(l.listX+1+sp.start, mgmtTabStripLine))
+			nm := got.(model)
+			if nm.jobs.main != mainJobs || nm.jobs.tree.focus {
+				t.Fatalf("width %d: clicking Jobs did not switch and focus the main pane", width)
+			}
+		}
+	}
+}
+
+// Locate the visible labels in the complete frame rather than deriving click
+// coordinates from the same spans used by the mouse handler.
+func TestRenderedMainTabsAcceptClicks(t *testing.T) {
+	for _, width := range []int{40, 60, 110, 160} {
+		for _, showTree := range []bool{false, true} {
+			m := agentsViewModel()
+			m.width = width
+			m.jobs.tree.show = showTree
+			for _, target := range []mainView{mainJobs, mainAgents, mainJobs} {
+				lines := strings.Split(stripAnsi(m.View()), "\n")
+				line := lines[mgmtTabStripLine]
+				// The sidebar also has an Agents label; the main tab is last.
+				idx := strings.LastIndex(line, target.label())
+				if idx < 0 {
+					t.Fatalf("width %d: missing %s in %q", width, target.label(), line)
+				}
+				x := lipgloss.Width(line[:idx])
+				got, _ := m.Update(leftClick(x, mgmtTabStripLine))
+				m = got.(model)
+				if m.jobs.main != target {
+					t.Fatalf("width %d, sidebar %v: click on visible %s at %d failed", width, showTree, target.label(), x)
+				}
+			}
+		}
+	}
+}
+
+func TestAgentsHideSessionStripAndIgnoreItsClicks(t *testing.T) {
+	m := agentsViewModel()
+	l := m.jobsLayout()
+	_, spans := m.jobsSessionStrip(l.listW - 2)
+	for _, sp := range spans {
+		got, _ := m.handleMouse(leftClick(l.listX+1+sp.start, 0))
+		if got.(model).jobs.session != m.jobs.session {
+			t.Fatal("hidden session strip changed the session scope")
+		}
+	}
+	lines := m.renderListPanel(l.listW, l.paneH, false)
+	if strings.Contains(stripAnsi(lines[0]), "All") {
+		t.Fatal("Agents still displays the session strip")
+	}
+}
+
 // An empty list says what would fill it, rather than reading as a broken pane.
 func TestAgentViewEmptyStateOffersAnAction(t *testing.T) {
 	m := agentsViewModel()

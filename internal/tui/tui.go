@@ -502,7 +502,9 @@ func run(jobsOnly bool) error {
 		m.tuiWatch = tuiConn
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	// openJobsView's command is discarded during model setup. Enable capture
+	// here so mouseOn cannot suppress the first actual mouse-enable sequence.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if fm, ok := finalModel.(model); ok {
 		fm.closeShells()

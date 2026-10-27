@@ -172,18 +172,18 @@ func TestSideTabsCycle(t *testing.T) {
 	}
 }
 
-// With the table focused, Tab still rolls the job views — the key belongs to
-// whichever pane has focus.
-func TestSideTabsLeaveJobViewsToTheTable(t *testing.T) {
+// With the main pane focused, Tab rolls *its* primary views — the key belongs to
+// whichever pane has focus, and each pane's primary axis is what it rolls.
+func TestSideTabsLeaveMainViewsToTheMainPane(t *testing.T) {
 	m := sideTabsModel()
 	m.jobs.tree.focus = false
 	nm, _ := m.handleJobsKey(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(model)
-	if m.jobs.tab != tabRunning {
-		t.Errorf("tab with the table focused should roll the job view, got %v", m.jobs.tab)
+	if m.jobs.main != mainAgents {
+		t.Errorf("tab with the main pane focused should roll its views, got %v", m.jobs.main)
 	}
 	if m.jobs.tree.tab != sideSpaces {
-		t.Errorf("tab with the table focused should leave the sidebar alone, got %v", m.jobs.tree.tab)
+		t.Errorf("tab with the main pane focused should leave the sidebar alone, got %v", m.jobs.tree.tab)
 	}
 }
 

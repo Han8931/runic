@@ -354,7 +354,10 @@ func (m model) renderListPanel(w, h int, overlay bool) []string {
 		lines = append(lines, m.mgmtBodyLines(max(1, h-4), inner, cols)...)
 	}
 	out := paneBox(lines, w, h, !m.jobs.tree.focus || !m.jobs.tree.show)
-	if !overlay {
+	// The session strip scopes the *job table*, so it only earns the pane's top
+	// row while the table is what is showing. Leaving it up in the Agents view
+	// put a control that does nothing on the most prominent line of the screen.
+	if !overlay && m.jobs.main == mainJobs {
 		sessions, _ := m.jobsSessionStrip(inner)
 		out[0] = borderStyle.Render("╭") + sessions + borderStyle.Render("╮")
 	}
@@ -531,8 +534,8 @@ func (m model) helpLines(bodyH, inner int) []string {
 		row("S", "session picker: open/new/edit, d deletes"),
 		row("  d on a ⊕", "keeps a worktree holding uncommitted work"),
 		row("tab / ⇧tab", "roll the focused pane's views"),
-		row("  list / tree", "all/running/… · spaces/agents"),
-		row("← / →", "roll views (from the job list)"),
+		row("  list / tree", "jobs/agents · spaces/agents"),
+		row("← / →", "roll status filters (from the job list)"),
 		row(",n", "toggle session tree"),
 		row("^w h/l", "focus tree (left) / list (right)"),
 		row("  in tree", "l/o/␣ fold · h collapse · ⏎ open · e/n/d"),
@@ -1049,7 +1052,7 @@ func (m model) jobsHints() []keyHint {
 	// are only reachable once it has focus, and a user looking at the Agents
 	// tab from here has no other way to learn that.
 	hints := []keyHint{
-		{key: "j/k", label: "move"}, {key: "[/]", label: "session"}, {key: "tab", label: "status"}, {key: "^w h", label: "agents"}, {key: "⏎", label: "output"},
+		{key: "j/k", label: "move"}, {key: "[/]", label: "session"}, {key: "tab", label: "agents"}, {key: "←/→", label: "status"}, {key: "^w h", label: "sidebar"}, {key: "⏎", label: "output"},
 		{key: "/", label: "filter"}, {key: ":", label: "command"}, {key: "space", label: "select"}, {key: "s", label: "sort"},
 		{key: "x", label: "kill"}, {key: "r", label: "rerun"}, {key: "d", label: "remove"}, {key: "S", label: "sessions"},
 		{key: ",n", label: "tree"}, {key: "?", label: "help"}, {key: "q", label: "quit"},
