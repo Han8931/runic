@@ -20,6 +20,39 @@ func firstLeaf(root *paneNode) *paneNode {
 	return leaves[0]
 }
 
+// leafWithPane finds the leaf hosting the named daemon-side pane, or nil. It is
+// how a row that names one specific pane — an agent in the sidebar's Agents
+// view — can be opened *on* that pane instead of on whichever one happens to
+// come first in the layout.
+func leafWithPane(root *paneNode, pane string) *paneNode {
+	if root == nil || pane == "" {
+		return nil
+	}
+	for _, leaf := range root.leaves() {
+		if leaf.shell != nil && leaf.shell.pane == pane {
+			return leaf
+		}
+	}
+	return nil
+}
+
+// focusPaneNamed retargets focus onto the named pane of the active session,
+// reporting whether it was found. A miss leaves the existing focus alone: the
+// pane may have been closed between the poll and the keypress, and landing on
+// the session's first pane is better than landing nowhere.
+//
+// No resize is needed — every pane's geometry comes from the layout, which this
+// does not touch, and activateSession has already sized them.
+func (m *model) focusPaneNamed(pane string) bool {
+	leaf := leafWithPane(m.activeRoot(), pane)
+	if leaf == nil {
+		return false
+	}
+	m.focusPane = leaf
+	m.syncFocusShell()
+	return true
+}
+
 func (m model) activeRoot() *paneNode {
 	return m.layouts[m.activeSession]
 }
@@ -48,6 +81,7 @@ func (m *model) movePaneFocus(dir splitDir, forward bool) bool {
 	m.focusPane = next
 	m.syncFocusShell()
 	m.focus = paneTerm
+	m.jobs.tree.focus = false
 	return true
 }
 
@@ -116,6 +150,7 @@ func persistLayoutCmd(session string, root *paneNode) tea.Cmd {
 }
 
 func (m model) activateSession(session string) (model, tea.Cmd) {
+	m.jobs.tree.focus = false
 	if session == "" {
 		session = "default"
 	}
@@ -124,6 +159,7 @@ func (m model) activateSession(session string) (model, tea.Cmd) {
 		m.focusPane = firstLeaf(root)
 		m.syncFocusShell()
 		m.focus = paneTerm
+		m.jobs.tree.focus = false
 		m.status = fmt.Sprintf("active session: %s", session)
 		m.resizeShell()
 		return m, clearScreenCmd()
@@ -138,6 +174,7 @@ func (m model) activateSession(session string) (model, tea.Cmd) {
 	m.focusPane = firstLeaf(m.layouts[session])
 	m.syncFocusShell()
 	m.focus = paneTerm
+	m.jobs.tree.focus = false
 	m.status = fmt.Sprintf("active session: %s", session)
 	cmds := make([]tea.Cmd, 0, len(created)+2)
 	for _, sh := range created {
@@ -189,6 +226,7 @@ func (m model) splitFocused(dir splitDir) (model, tea.Cmd) {
 	m.focusPane = created
 	m.shell = sh
 	m.focus = paneTerm
+	m.jobs.tree.focus = false
 	go sh.readLoop()
 	m.resizeShell()
 	return m, tea.Batch(waitForPTYOutput(sh.id, sh.ptyCh), clearScreenCmd(), persistLayoutCmd(m.activeSession, root))
@@ -263,6 +301,7 @@ func (m model) focusNextPane() (model, tea.Cmd) {
 	m.focusPane = root.nextLeaf(m.focusPane)
 	m.syncFocusShell()
 	m.focus = paneTerm
+	m.jobs.tree.focus = false
 	return m, nil
 }
 
@@ -278,6 +317,7 @@ func (m model) focusDirPane(dir splitDir, forward bool) (model, tea.Cmd) {
 		m.focusPane = next
 		m.syncFocusShell()
 		m.focus = paneTerm
+		m.jobs.tree.focus = false
 	}
 	return m, nil
 }
@@ -287,6 +327,9 @@ func (m model) focusDirPane(dir splitDir, forward bool) (model, tea.Cmd) {
 // 1-cell border on each side.
 func (m model) termRegionSize() (w, h int) {
 	w = m.width
+	if sw := m.termSidebarWidth(); sw > 0 {
+		w -= sw + paneGap
+	}
 	h = m.height - 1 // footer line
 	if m.inputMode != inputNone {
 		h--

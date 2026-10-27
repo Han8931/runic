@@ -36,10 +36,16 @@ func createSession(name string) tea.Cmd {
 
 // createSessionInGroup creates a session and, when branch is non-empty, gives it
 // an isolated git worktree on that branch (branched from the directory `ru` was
-// started in).
-func createSessionInGroup(name, group, branch string) tea.Cmd {
+// started in). A non-empty agent makes it an agent session: the daemon starts
+// that agent in the session's first pane.
+func createSessionInGroup(name, group, branch, agent string) tea.Cmd {
 	return func() tea.Msg {
-		if err := client.SessionCreateWorktree(name, branch != "", "", branch); err != nil {
+		if err := client.SessionCreateSpec(client.SessionSpec{
+			Name:     name,
+			Worktree: branch != "",
+			Branch:   branch,
+			Agent:    agent,
+		}); err != nil {
 			return actionDoneMsg{err: err}
 		}
 		if group != "" && group != "default" {
@@ -90,7 +96,7 @@ func renameSession(oldName, newName string) tea.Cmd {
 		if err != nil {
 			return actionDoneMsg{err: err}
 		}
-		return actionDoneMsg{status: fmt.Sprintf("renamed %q -> %q", oldName, newName)}
+		return actionDoneMsg{status: fmt.Sprintf("renamed %q -> %q", oldName, newName), renamedFrom: oldName, renamedTo: newName}
 	}
 }
 
@@ -134,9 +140,9 @@ func editSession(oldName, newName, oldGroup, newGroup string) tea.Cmd {
 				_ = client.GroupCreate(g) // create the target group if missing
 			}
 			if err := client.SessionMove(cur, g); err != nil {
-				return actionDoneMsg{err: err}
+				return actionDoneMsg{err: err, renamedFrom: oldName, renamedTo: cur}
 			}
 		}
-		return actionDoneMsg{status: fmt.Sprintf("updated session %q", cur)}
+		return actionDoneMsg{status: fmt.Sprintf("updated session %q", cur), renamedFrom: oldName, renamedTo: cur}
 	}
 }

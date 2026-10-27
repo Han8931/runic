@@ -15,40 +15,94 @@ import (
 // header), the surrounding chrome (borders, detail pane, footer, HW bar),
 // and the shared modal-box helpers.
 
+// columnWidths is the job table's column budget. A width of 0 means the column
+// is hidden at this terminal size; the row and header renderers skip it and its
+// separator entirely, so nothing is left holding empty space.
+//
+// There is one WORK column rather than the old NAME + COMMAND pair. For an
+// unnamed job those two held the same text, spending a third of the table to
+// say one thing twice.
 type columnWidths struct {
-	id, group, session, state, tm, timeout, name, command int
+	id, group, session, state, tm, timeout, work int
 }
 
-func computeJobColumns(inner int) columnWidths {
-	// state fits the widest badge ("× signal 15", "◆ retry 1/2") without
-	// clipping the glyph the column is read by.
-	c := columnWidths{id: 5, group: 10, session: 12, state: 12, tm: 8, timeout: 8, name: 14}
-	const sep = 9 // three spaces after ID, single space between the other columns
-	fixedNoCmd := func() int {
-		return c.id + c.group + c.session + c.state + c.tm + c.timeout + c.name + sep
+const (
+	colIDW    = 5
+	colStateW = 12 // the widest badge: "× signal 15", "◆ retry 1/2"
+	colTimeW  = 8
+	colSessW  = 12
+	colGroupW = 10
+	colTmoW   = 8
+	// colWorkWant is the width below which a command stops being readable. It
+	// is a floor the optional columns respect, not a guarantee: a very narrow
+	// terminal gives WORK whatever is left.
+	colWorkWant = 24
+	colIDGap    = 3 // three spaces after ID, one between every other column
+)
+
+// computeJobColumns budgets the table by usefulness instead of a fixed layout.
+// What a job *is* (WORK), what it is doing (STATE) and how long it has been
+// doing it (TIME) always survive; the scope columns are added only once those
+// fit comfortably.
+//
+// The previous fixed budget reserved every column unconditionally and clawed
+// space back from the text ones, which meant that below about 100 columns WORK
+// collapsed to a single character — the table rendered without ever saying what
+// any job was. At 80 columns it fell off the pane entirely.
+//
+// anyTimeout drops TIMEOUT when nothing in view has one, which is the common
+// case since it is opt-in per job.
+func computeJobColumns(inner int, anyTimeout bool) columnWidths {
+	c := columnWidths{id: colIDW, state: colStateW, tm: colTimeW}
+	// The base set is ID, STATE, TIME and WORK: the ID gap, plus a separator
+	// between each of the three columns that follow it.
+	used := c.id + colIDGap + c.state + c.tm + 2
+	// Optional columns, least dispensable first. Each costs its width plus one
+	// separator, and is only taken while WORK keeps its preferred floor.
+	for _, o := range []struct {
+		w     int
+		into  *int
+		avail bool
+	}{
+		{colSessW, &c.session, true},
+		{colGroupW, &c.group, true},
+		{colTmoW, &c.timeout, anyTimeout},
+	} {
+		if !o.avail || used+1+o.w+colWorkWant > inner {
+			continue
+		}
+		*o.into = o.w
+		used += 1 + o.w
 	}
-	c.command = inner - fixedNoCmd()
-	if c.command < 10 {
-		// Reclaim room from the widest text columns first.
-		for _, p := range []*int{&c.name, &c.session, &c.group} {
-			if c.command >= 10 {
-				break
-			}
-			need := 10 - c.command
-			room := *p - 6
-			if room > need {
-				room = need
-			}
-			if room > 0 {
-				*p -= room
-				c.command = inner - fixedNoCmd()
-			}
+	c.work = max(1, inner-used)
+	return c
+}
+
+// jobsAnyTimeout reports whether any job currently in the table has a timeout,
+// which is what decides if the TIMEOUT column earns its space.
+func (m model) jobsAnyTimeout() bool {
+	for _, r := range m.jobs.rows {
+		if r.job.TimeoutMS > 0 {
+			return true
 		}
 	}
-	if c.command < 1 {
-		c.command = 1
+	return false
+}
+
+// joinCols lays out the visible cells in table order: three spaces after ID,
+// one between the rest. Hidden columns (width 0) contribute nothing, not even
+// a separator.
+func joinCols(sep string, id string, rest []string) string {
+	var b strings.Builder
+	b.WriteString(id)
+	b.WriteString(strings.Repeat(sep, colIDGap))
+	for i, cell := range rest {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(cell)
 	}
-	return c
+	return b.String()
 }
 
 func formatJobRow(j protocol.JobInfo, group string, c columnWidths) string {
@@ -73,36 +127,59 @@ func renderJobsRow(j protocol.JobInfo, group string, c columnWidths, bg lipgloss
 	if j.State == protocol.StateRunning || j.State == protocol.StateFinished {
 		timeStr = format.Duration(format.ElapsedMS(j))
 	}
-	// The label lives in its own NAME column; unnamed jobs echo a dim command
-	// snippet there so the column still identifies the row at a glance.
-	nameTxt, nameStyle := j.Label, jobNameStyle
-	if nameTxt == "" {
-		nameTxt, nameStyle = j.Command, treeEmptyStyle
-	}
 	stateTxt, stateStyle := jobStateText(j)
-	cell := func(text string, w int, style lipgloss.Style) string {
+	st := func(s lipgloss.Style) lipgloss.Style {
 		if bg != nil {
-			style = style.Background(bg)
+			return s.Background(bg)
 		}
-		return style.Render(fitToWidth(stripAnsi(text), w))
+		return s
+	}
+	cell := func(text string, w int, style lipgloss.Style) string {
+		return st(style).Render(fitToWidth(stripAnsi(text), w))
 	}
 	sep := " "
 	if bg != nil {
-		sep = lipgloss.NewStyle().Background(bg).Render(" ")
+		sep = st(lipgloss.NewStyle()).Render(" ")
 	}
-	id := cell(fmt.Sprintf("%*d", c.id, j.ID), c.id, jobIDStyle)
-	grp := cell(group, c.group, groupStyle)
-	sess := cell(displaySession(j.Session), c.session, sessionStyle)
-	state := cell(stateTxt, c.state, stateStyle)
-	tm := cell(timeStr, c.tm, lipgloss.NewStyle().Foreground(cFg))
 	timeoutTxt, timeoutStyle := "-", treeEmptyStyle
 	if j.TimeoutMS > 0 {
 		timeoutTxt, timeoutStyle = durationCompact(time.Duration(j.TimeoutMS)*time.Millisecond), queuedStyle
 	}
-	timeout := cell(timeoutTxt, c.timeout, timeoutStyle)
-	name := cell(nameTxt, c.name, nameStyle)
-	command := cell(j.Command, c.command, lipgloss.NewStyle().Foreground(cFg))
-	return id + sep + sep + sep + grp + sep + sess + sep + state + sep + tm + sep + timeout + sep + name + sep + command
+	// Order matters: this is the table's left-to-right layout.
+	var rest []string
+	add := func(w int, s string) {
+		if w > 0 {
+			rest = append(rest, s)
+		}
+	}
+	add(c.group, cell(group, c.group, groupStyle))
+	add(c.session, cell(displaySession(j.Session), c.session, sessionStyle))
+	add(c.state, cell(stateTxt, c.state, stateStyle))
+	add(c.tm, cell(timeStr, c.tm, lipgloss.NewStyle().Foreground(cFg)))
+	add(c.timeout, cell(timeoutTxt, c.timeout, timeoutStyle))
+	add(c.work, workCell(j, c.work, st))
+	return joinCols(sep, cell(fmt.Sprintf("%*d", c.id, j.ID), c.id, jobIDStyle), rest)
+}
+
+// workCell renders the WORK column: what the job is. A named job leads with its
+// name and trails its command in a dim tone when both fit; an unnamed job shows
+// the command once. The old layout put the command in COMMAND and *also* echoed
+// it into NAME whenever the job had no label, so the two columns duplicated
+// each other for exactly the jobs that needed the room most.
+func workCell(j protocol.JobInfo, w int, st func(lipgloss.Style) lipgloss.Style) string {
+	cmdStyle := lipgloss.NewStyle().Foreground(cFg)
+	if j.Label == "" {
+		return st(cmdStyle).Render(fitToWidth(stripAnsi(j.Command), w))
+	}
+	name := stripAnsi(j.Label)
+	// Show the command alongside the name only when enough of it survives to
+	// be worth reading; otherwise the name owns the column.
+	if nameW := lipgloss.Width(name); nameW+2+6 <= w {
+		return st(jobNameStyle).Render(name) +
+			st(lipgloss.NewStyle()).Render("  ") +
+			st(treeEmptyStyle).Render(fitToWidth(stripAnsi(j.Command), w-nameW-2))
+	}
+	return st(jobNameStyle).Render(fitToWidth(name, w))
 }
 
 // durationCompact renders a duration without trailing zero units (30m0s → 30m).
@@ -150,14 +227,20 @@ func (m model) jobsHeaderRow(c columnWidths) string {
 		return title
 	}
 	// Plain text; the caller block-highlights the whole row with jobsHeaderStyle.
-	return fmt.Sprintf("%*s", c.id, mark("ID", m.jobs.sortMode == sortByID)) + "   " +
-		fitToWidth(mark("GROUP", m.jobs.sortMode == sortGrouped), c.group) + " " +
-		fitToWidth("SESSION", c.session) + " " +
-		fitToWidth(mark("STATE", m.jobs.sortMode == sortByState), c.state) + " " +
-		fitToWidth(mark("TIME", m.jobs.sortMode == sortByTime), c.tm) + " " +
-		fitToWidth("TIMEOUT", c.timeout) + " " +
-		fitToWidth("NAME", c.name) + " " +
-		fitToWidth("COMMAND", c.command)
+	// Hidden columns are skipped so the header matches the rows beneath it.
+	var rest []string
+	add := func(w int, title string) {
+		if w > 0 {
+			rest = append(rest, fitToWidth(title, w))
+		}
+	}
+	add(c.group, mark("GROUP", m.jobs.sortMode == sortGrouped))
+	add(c.session, "SESSION")
+	add(c.state, mark("STATE", m.jobs.sortMode == sortByState))
+	add(c.tm, mark("TIME", m.jobs.sortMode == sortByTime))
+	add(c.timeout, "TIMEOUT")
+	add(c.work, "WORK")
+	return joinCols(" ", fmt.Sprintf("%*s", c.id, mark("ID", m.jobs.sortMode == sortByID)), rest)
 }
 
 // --- rendering ------------------------------------------------------------
@@ -238,7 +321,7 @@ func paneBox(lines []string, w, h int, focused bool) []string {
 // over the foldable group → session → job tree.
 func (m model) renderTreePanel(w, h int) []string {
 	inner := w - 2
-	lines := append([]string{m.treeHeaderCell(inner)}, m.treePaneLines(max(0, h-3), inner)...)
+	lines := append([]string{m.treeHeaderCell(inner)}, m.treePaneLines(treeBodyHeight(h), inner)...)
 	return paneBox(lines, w, h, m.jobs.tree.focus)
 }
 
@@ -259,14 +342,19 @@ func (m model) renderListPanel(w, h int, overlay bool) []string {
 	strip, _ := m.renderTabStrip(inner)
 	lines := []string{strip}
 	// Column 0 of the list is a cursor gutter, like the sidebar's.
-	cols := computeJobColumns(max(1, inner-1))
+	cols := computeJobColumns(max(1, inner-1), m.jobsAnyTimeout())
 	if overlay {
 		lines = append(lines, m.mgmtBodyLines(max(1, h-3), inner, cols)...)
 	} else {
 		lines = append(lines, jobsHeaderStyle.Render(fitToWidth(" "+m.jobsHeaderRow(cols), inner)))
 		lines = append(lines, m.mgmtBodyLines(max(1, h-4), inner, cols)...)
 	}
-	return paneBox(lines, w, h, !m.jobs.tree.focus || !m.jobs.tree.show)
+	out := paneBox(lines, w, h, !m.jobs.tree.focus || !m.jobs.tree.show)
+	if !overlay {
+		sessions, _ := m.jobsSessionStrip(inner)
+		out[0] = borderStyle.Render("╭") + sessions + borderStyle.Render("╮")
+	}
+	return out
 }
 
 // mgmtBodyLines renders the visible window of the group→session→job list (or the
@@ -426,7 +514,8 @@ func (m model) helpLines(bodyH, inner int) []string {
 		row("o", "open the output pager"),
 		row("S", "session picker: open/new/edit, d deletes"),
 		row("  d on a ⊕", "keeps a worktree holding uncommitted work"),
-		row("tab / ⇧tab", "roll views: all/running/queued/done/failed"),
+		row("tab / ⇧tab", "roll the focused pane's views"),
+		row("  list / tree", "all/running/… · spaces/agents"),
 		row("← / →", "roll views (from the job list)"),
 		row(",n", "toggle session tree"),
 		row("^w h/l", "focus tree (left) / list (right)"),
@@ -453,6 +542,12 @@ func (m model) helpLines(bodyH, inner int) []string {
 		row(":reset", "factory-reset runic (confirms)"),
 		row("q", "quit"),
 		row("esc", "back to the open session"),
+		"",
+		jobsDetailKeyStyle.Render("  In a session"),
+		row("^B n/p", "next / previous session tab"),
+		row("^B 1-9", "jump to the nth session tab"),
+		row("^B o", "cycle panes within the session"),
+		row("^B d", "detach back here (panes keep running)"),
 		"",
 		jobsDetailKeyStyle.Render("  Reading the screen"),
 		row("STATE", "green runs, amber waits, red failed"),
@@ -584,8 +679,8 @@ func (m model) jobsDetailLines(maxLines, inner int) []string {
 	// under the cursor (branch, isolation, what its agent last said), which is
 	// the context you need before opening or deleting it. Driving the list, it
 	// describes the job.
-	if lines, ok := m.sessionDetailLines(inner); ok {
-		rule(" session ")
+	if lines, title, ok := m.sessionDetailLines(inner); ok {
+		rule(title)
 		for _, sl := range lines {
 			if len(out) >= maxLines {
 				break
@@ -613,16 +708,17 @@ func (m model) jobsDetailLines(maxLines, inner int) []string {
 	return out[:maxLines]
 }
 
-// sessionDetailLines describes the session (or group) the sidebar cursor is on.
-// The second result is false when the sidebar isn't driving, so the caller
-// falls back to the job panel.
-func (m model) sessionDetailLines(inner int) ([]string, bool) {
+// sessionDetailLines describes the group, session, or agent the sidebar cursor
+// is on, together with the heading the panel should carry. The last result is
+// false when the sidebar isn't driving, so the caller falls back to the job
+// panel.
+func (m model) sessionDetailLines(inner int) ([]string, string, bool) {
 	if !m.jobs.tree.show || !m.jobs.tree.focus {
-		return nil, false
+		return nil, "", false
 	}
 	r, ok := m.jobs.tree.current()
 	if !ok || r.kind == treeJob {
-		return nil, false
+		return nil, "", false
 	}
 	field := func(key, value string) string {
 		k := jobsDetailKeyStyle.Render(key + ":")
@@ -634,11 +730,46 @@ func (m model) sessionDetailLines(inner int) ([]string, bool) {
 			field("Group", r.group),
 			field("Sessions", fmt.Sprintf("%d", r.total)),
 			field("Jobs", jobsSummaryText(r)),
-		}, true
+		}, " space ", true
+	}
+	if r.kind == treeAgent {
+		// An agent row carries no job counts and no worktree of its own, so it
+		// gets its own panel rather than the session one with empty fields: the
+		// pane, what it last said, and the session it would open.
+		state := agentStateWord(r.attention, r.seen)
+		if !r.since.IsZero() && r.attention != protocol.AttentionNone {
+			state += " for " + waitAge(r.since)
+		}
+		lines := []string{
+			field("Agent", r.session+" · "+r.pane),
+			field("State", state),
+		}
+		if r.note != "" {
+			lines = append(lines, field("Said", r.note))
+		}
+		lines = append(lines, field("Group", r.group))
+		if s, ok := m.sessionInfo(r.session); ok {
+			if s.Agent != "" {
+				lines = append(lines, field("Kind", s.Agent))
+			}
+			if s.Branch != "" {
+				lines = append(lines, field("Branch", s.Branch))
+			}
+		}
+		open := "⏎ attaches, which clears a waiting state"
+		if r.attention == protocol.AttentionError {
+			open = "⏎ attaches; the error stays until  ru mark done"
+		}
+		return append(lines, field("Open", open)), " agent ", true
 	}
 	lines := []string{
 		field("Session", r.session),
 		field("Group", r.group),
+	}
+	// What the session hosts, as decided when it was created — a different fact
+	// from what its panes are currently reporting, which is State below.
+	if s, ok := m.sessionInfo(r.session); ok && s.Agent != "" {
+		lines = append(lines, field("Agent", s.Agent))
 	}
 	if r.branch != "" {
 		lines = append(lines,
@@ -652,13 +783,16 @@ func (m model) sessionDetailLines(inner int) ([]string, bool) {
 		if !r.since.IsZero() {
 			state += " for " + waitAge(r.since)
 		}
-		lines = append(lines, field("Agent", state))
+		// "State", not "Agent": the row above may already name the kind of agent
+		// the session hosts, and two lines labelled Agent would read as one
+		// contradicting the other.
+		lines = append(lines, field("State", state))
 		if r.note != "" {
 			lines = append(lines, field("Said", r.note))
 		}
 	}
 	lines = append(lines, field("Jobs", jobsSummaryText(r)))
-	return lines, true
+	return lines, " session ", true
 }
 
 // jobsSummaryText renders a tree row's job counts as one phrase.
@@ -720,18 +854,35 @@ func (m model) confirmQuestion() string {
 // (filter or command line) if any, else the confirmation question, else what
 // may follow a pending two-key chord, else the context key hints.
 func (m model) jobsFooterLine(w int) string {
+	line, _ := m.jobsFooterSpans(w)
+	return line
+}
+
+// jobsFooterSpans renders the footer and reports where its hints landed, so the
+// same function answers both the renderer and a click.
+func (m model) jobsFooterSpans(w int) (string, []hintSpan) {
+	// Offset the spans by whatever leads the bar: a confirm question and a chord
+	// prefix both push the hints to the right.
+	withLead := func(lead string, hints []keyHint) (string, []hintSpan) {
+		leadW := lipgloss.Width(lead)
+		bar, spans := renderHintBar(hints, max(0, w-leadW))
+		for i := range spans {
+			spans[i].start += leadW
+			spans[i].end += leadW
+		}
+		return fitToWidth(lead+bar, w), spans
+	}
 	switch {
 	case m.jobs.filtering:
-		return fitToWidth(inputStyle.Render("/")+m.textInput.View(), w)
+		return fitToWidth(inputStyle.Render("/")+m.textInput.View(), w), nil
 	case m.jobs.commanding:
-		return fitToWidth(inputStyle.Render(m.cmdInput.View()), w)
+		return fitToWidth(inputStyle.Render(m.cmdInput.View()), w), nil
 	case m.jobs.confirm.kind != confirmNone:
 		lead := dangerChipStyle.Render(" CONFIRM ") + " " + finishedErrStyle.Render(m.confirmQuestion()) + "  "
-		return fitToWidth(lead+renderHintBar([]keyHint{{"y", "yes"}, {"n/esc", "cancel"}}, max(0, w-lipgloss.Width(lead))), w)
+		return withLead(lead, []keyHint{{"y", "yes"}, {"n/esc", "cancel"}})
 	}
 	if prefix, hints := m.pendingHints(); prefix != "" {
-		lead := warnChipStyle.Render(" "+prefix+"… ") + " "
-		return fitToWidth(lead+renderHintBar(hints, max(0, w-lipgloss.Width(lead))), w)
+		return withLead(warnChipStyle.Render(" "+prefix+"… ")+" ", hints)
 	}
 	return renderHintBar(m.jobsHints(), w)
 }
@@ -739,10 +890,20 @@ func (m model) jobsFooterLine(w int) string {
 // keyHint is one entry of the hint bar: a key cap followed by a short label.
 type keyHint struct{ key, label string }
 
+// hintSpan is where one hint landed on the rendered bar, so a click can be
+// resolved back to the key it advertises. See clickHintBar.
+type hintSpan struct {
+	hint       keyHint
+	start, end int // [start, end) columns from the bar's left edge
+}
+
 // renderHintBar draws key caps ( j  move   tab  views …) on one row, dropping
-// trailing hints that don't fit rather than wrapping.
-func renderHintBar(hints []keyHint, width int) string {
+// trailing hints that don't fit rather than wrapping. The spans it returns make
+// the bar clickable: it already lists exactly the keys that apply right now, so
+// turning those into targets gives a complete mouse path with no new UI.
+func renderHintBar(hints []keyHint, width int) (string, []hintSpan) {
 	var b strings.Builder
+	var spans []hintSpan
 	used := 0
 	for i, h := range hints {
 		chip := keyCapStyle.Render(" "+h.key+" ") + " " + keyLabelStyle.Render(h.label)
@@ -758,9 +919,12 @@ func renderHintBar(hints []keyHint, width int) string {
 			b.WriteString("  ")
 		}
 		b.WriteString(chip)
+		// The label is part of the target, not just the cap: a two-column chip
+		// is a miserable thing to hit, and the whole entry reads as one button.
+		spans = append(spans, hintSpan{hint: h, start: used + sep, end: used + sep + cw})
 		used += sep + cw
 	}
-	return fitToWidth(b.String(), width)
+	return fitToWidth(b.String(), width), spans
 }
 
 // pendingHints lists what may follow a pending chord prefix, so sequences like
@@ -790,8 +954,17 @@ func (m model) jobsHints() []keyHint {
 		return []keyHint{{"j/k", "move"}, {"enter", "choose"}, {"esc", "close"}}
 	}
 	if m.jobs.tree.show && m.jobs.tree.focus {
+		// The Agents view is flat, so the fold and group-management keys are
+		// left out of its hints rather than advertised and then ignored.
+		if m.jobs.tree.tab == sideAgents {
+			return []keyHint{
+				{"j/k", "move"}, {"tab", "spaces"}, {"⏎", "attach"},
+				{"m", "menu"}, {"e", "edit"}, {"^w l", "jobs"},
+				{"A", "zoom"}, {"?", "help"}, {"q", "quit"},
+			}
+		}
 		return []keyHint{
-			{"j/k", "move"}, {"tab", "views"}, {"l/h", "fold"}, {"⏎", "open"},
+			{"j/k", "move"}, {"tab", "agents"}, {"l/h", "fold"}, {"⏎", "open"},
 			{"m", "menu"}, {"e", "edit"}, {"n", "new"}, {"d", "delete"},
 			{"^w l", "jobs"}, {"A", "zoom"}, {"?", "help"}, {"q", "quit"},
 		}
@@ -799,11 +972,14 @@ func (m model) jobsHints() []keyHint {
 	if m.jobs.visual {
 		return []keyHint{{"j/k", "extend"}, {"x", "kill"}, {"r", "rerun"}, {"u", "urgent"}, {"d", "remove"}, {"esc", "cancel"}}
 	}
+	// `^w h` is listed early and named for its payoff: the sidebar's own tabs
+	// are only reachable once it has focus, and a user looking at the Agents
+	// tab from here has no other way to learn that.
 	hints := []keyHint{
-		{"j/k", "move"}, {"tab", "views"}, {"⏎", "output"}, {"/", "filter"},
-		{":", "command"}, {"space", "select"}, {"s", "sort"}, {"x", "kill"},
-		{"r", "rerun"}, {"d", "remove"}, {"S", "sessions"}, {",n", "tree"},
-		{"?", "help"}, {"q", "quit"},
+		{"j/k", "move"}, {"[/]", "session"}, {"tab", "status"}, {"^w h", "agents"}, {"⏎", "output"},
+		{"/", "filter"}, {":", "command"}, {"space", "select"}, {"s", "sort"},
+		{"x", "kill"}, {"r", "rerun"}, {"d", "remove"}, {"S", "sessions"},
+		{",n", "tree"}, {"?", "help"}, {"q", "quit"},
 	}
 	if len(m.jobs.tagged) > 0 {
 		hints = append([]keyHint{{"esc", "clear selection"}}, hints...)
@@ -818,7 +994,9 @@ func (m model) jobsStatusBar(w int) string {
 	for _, n := range m.nodes {
 		sessions += len(n.sessions)
 		for _, s := range n.sessions {
-			if s.Attention.NeedsYou() {
+			// An acknowledged error stays visible in the tree but stops
+			// counting here: you already know about it.
+			if protocol.Unresolved(s.Attention, s.AttentionSeen) {
 				needYou++
 			}
 		}
@@ -839,8 +1017,20 @@ func (m model) jobsStatusBar(w int) string {
 
 	left := modeStyle.Render(mode) + statusPair("VIEW", val(m.jobs.tab.label()))
 	if needYou > 0 {
-		// The one count you are meant to act on gets the loudest chip.
-		left += " " + dangerChipStyle.Render(fmt.Sprintf(" %d need you ", needYou))
+		// The one count you are meant to act on gets the loudest chip. It names
+		// its unit because the sidebar's Agents tab carries a count of its own,
+		// over *panes* — a session with two blocked agents is "1 session" here
+		// and "2!" there, and an unlabelled number would read as a contradiction.
+		noun := "sessions need you"
+		if needYou == 1 {
+			noun = "session needs you"
+		}
+		left += " " + dangerChipStyle.Render(fmt.Sprintf(" %d %s ", needYou, noun))
+	}
+	// The count says how many; the alarm says which one and why. It is the
+	// half you can act on without going looking, so it sits beside the count.
+	if !m.alarm.alert.empty() {
+		left += " " + dangerChipStyle.Render(" ! "+shorten(m.alarm.alert.text(), 48)+" ")
 	}
 	left += statusPair("SESS", val(fmt.Sprint(sessions)))
 	if n := len(m.jobs.tagged); n > 0 {

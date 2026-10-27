@@ -113,6 +113,14 @@ func (m model) handleCtrlB(msg tea.KeyMsg) (model, bool, tea.Cmd) {
 		switch key {
 		case "esc":
 			return m, true, nil
+		case "s":
+			nm, cmd := m.focusSessionSidebar()
+			return nm, true, cmd
+		case "b":
+			m.termSidebarHidden = !m.termSidebarHidden
+			m.jobs.tree.focus = false
+			m.resizeShell()
+			return m, true, clearScreenCmd()
 		case "c":
 			m.inputMode = inputCommand
 			m.cmdInput.SetValue("")
@@ -144,6 +152,18 @@ func (m model) handleCtrlB(msg tea.KeyMsg) (model, bool, tea.Cmd) {
 			return nm, true, cmd
 		case "down":
 			nm, cmd := m.focusDirPane(splitHoriz, true)
+			return nm, true, cmd
+		case "n":
+			// Ctrl+B n/p roll between open sessions, the way tmux moves between
+			// windows. The session tabs on the top border are what they move
+			// along; `o` still cycles panes *within* the session.
+			nm, cmd := m.cycleSessionTab(1)
+			return nm, true, cmd
+		case "p":
+			nm, cmd := m.cycleSessionTab(-1)
+			return nm, true, cmd
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			nm, cmd := m.selectSessionTab(int(key[0] - '0'))
 			return nm, true, cmd
 		case "j":
 			// Ctrl+B j opens the job-management view. Pane-down is on Ctrl+B ↓.

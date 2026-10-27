@@ -33,8 +33,18 @@ type model struct {
 	ctrlBTimer   int
 	nextPaneID   int
 
-	nodes     []treeNode
-	groups    []string // all group names, from the last tree poll
+	nodes  []treeNode
+	groups []string // all group names, from the last tree poll
+	// agents is every live pane from the last poll, which the sidebar's Agents
+	// tab lists. A session rolls its panes up to one state; this keeps the
+	// individual panes, so two agents in one session stay two rows.
+	agents []protocol.TerminalInfo
+	// agentKinds is the configured agent registry's kinds, which the New-session
+	// box offers. Read from the same config the daemon resolves them against.
+	agentKinds []string
+	// alarm tracks which panes have already rung, so a newly blocked agent
+	// alarms once rather than on every poll. See alarm.go.
+	alarm     alarmState
 	maxSlots  int
 	err       error
 	status    string
@@ -75,9 +85,12 @@ type model struct {
 	hwStats sysmon.Stats
 
 	// mouseOn tracks whether terminal mouse reporting is currently enabled. It
-	// is turned on only while the management view is showing so terminal panes
-	// keep their native text selection.
-	mouseOn bool
+	// supports session tabs and sidebar navigation in both views. Shift-drag
+	// bypasses reporting for native selection in terminals that support it.
+	mouseOn           bool
+	termSidebarHidden bool
+	// lastClick backs double-click detection on both screens; see clicks.go.
+	lastClick clickState
 
 	// tuiWatch is the TUI-registration connection; takenOver is set when the
 	// daemon displaced this TUI because a newer `ru` attached.
@@ -96,9 +109,13 @@ const (
 )
 
 type treeDataMsg struct {
-	groups       []string
-	sessions     []protocol.SessionInfo
-	jobs         []protocol.JobInfo
+	groups   []string
+	sessions []protocol.SessionInfo
+	jobs     []protocol.JobInfo
+	// terminals is every live daemon-hosted pane, which the sidebar's Agents
+	// tab lists one row per. Sessions carry only the rolled-up attention, so
+	// the per-pane states have to come from their own query.
+	terminals    []protocol.TerminalInfo
 	maxSlots     int
 	openJobsView bool
 	err          error
@@ -111,8 +128,9 @@ type ctrlBTimeoutMsg struct{ id int }
 type gTimeoutMsg struct{ id int }
 
 type actionDoneMsg struct {
-	status string
-	err    error
+	status                 string
+	err                    error
+	renamedFrom, renamedTo string
 	// offerDiscard names a session whose delete was refused because its worktree
 	// holds uncommitted work. It escalates to the discard confirmation instead of
 	// leaving the user with an error and no way forward; detail is what the
@@ -210,10 +228,15 @@ func fetchTreeData() tea.Msg {
 	if err != nil {
 		return treeDataMsg{err: err}
 	}
+	// The pane list is a second round trip, and a nice-to-have next to the
+	// tree: if it fails, the Agents tab goes empty rather than the whole
+	// refresh reporting an error and blanking the screen.
+	terminals, _ := client.ListTerminals()
 	return treeDataMsg{
 		groups:       data.Groups,
 		sessions:     data.Sessions,
 		jobs:         data.Jobs,
+		terminals:    terminals,
 		maxSlots:     data.MaxSlots,
 		openJobsView: data.OpenJobsView,
 	}
@@ -236,15 +259,22 @@ func sampleHWCmd(mon *sysmon.Monitor) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// The frame rendered after the message that set it has carried the bell by
+	// now, so retire it here: that is what rings it exactly once. Done before
+	// the switch so every path, including the early returns, clears it.
+	m.clearBell()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.viewMode == viewSplit && m.termSidebarWidth() == 0 {
+			m.jobs.tree.focus = false
+		}
 		m.resizeShell()
 		cmds := []tea.Cmd{clearScreenCmd()}
 		// Enable mouse capture the first time we know the size while on the
 		// management screen (enabling from Init is unreliable).
-		if m.viewMode == viewJobs && !m.mouseOn {
+		if !m.mouseOn {
 			m.mouseOn = true
 			cmds = append(cmds, tea.EnableMouseCellMotion)
 		}
@@ -261,6 +291,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			expanded[n.group] = n.expanded
 		}
 		m.groups = msg.groups
+		m.agents = msg.terminals
+		(&m).updateAlarm(msg.terminals)
 		m.nodes = buildTree(msg.groups, msg.sessions, msg.jobs)
 		for i, n := range m.nodes {
 			if exp, ok := expanded[n.group]; ok {
@@ -274,7 +306,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name := m.pendingOpen
 			m.pendingOpen = ""
 			nm, cmd := m.openSession(name)
-			return nm, tea.Batch(cmd, clearScreenCmd(), tea.DisableMouse)
+			return nm, tea.Batch(cmd, clearScreenCmd(), tea.EnableMouseCellMotion)
 		}
 		// Another client (`ru --jobs` from inside a pane) asked us to open the
 		// jobs view. Honour it only from the split view so we don't disturb a
@@ -282,6 +314,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.openJobsView && m.viewMode == viewSplit {
 			m, mouseCmd := m.openJobsView()
 			return m, tea.Batch(clearScreenCmd(), sampleHWCmd(m.hwMon), mouseCmd)
+		}
+		m.refreshTreeRows()
+		if m.jobs.session != "" && !m.sessionExists(m.jobs.session) {
+			m.jobs.session = ""
 		}
 		if m.viewMode == viewJobs {
 			m.jobs.allJobs = msg.jobs
@@ -351,6 +387,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case actionDoneMsg:
+		if msg.renamedFrom != "" && msg.renamedFrom != msg.renamedTo {
+			m.renameLocalSession(msg.renamedFrom, msg.renamedTo)
+		}
 		if msg.err != nil {
 			m.status = fmt.Sprintf("error: %v", msg.err)
 		} else {
@@ -385,6 +424,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if handled {
 			return m, cmd
 		}
+		if m.jobs.tree.focus || m.jobs.form.active || m.jobs.confirm.kind != confirmNone {
+			return m.handleSessionSidebarKey(msg)
+		}
 		return m.handleTermKey(msg)
 	}
 	return m, nil
@@ -408,6 +450,7 @@ func run(jobsOnly bool) error {
 	m := newModel(nil)
 	m.activeSession = ""
 	m.jobsOnly = jobsOnly
+	m.agentKinds = cfg.AgentKinds()
 	// The Sessions pane starts open, list focused: the three-pane screen is
 	// the home view. `,n` still folds it away.
 	m.jobs.tree.show = true

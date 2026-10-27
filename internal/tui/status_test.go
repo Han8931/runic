@@ -3,7 +3,10 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/han/runic/internal/protocol"
 )
 
 func TestParseGitHead(t *testing.T) {
@@ -64,6 +67,35 @@ func TestGitBranchWorktreePointer(t *testing.T) {
 	}
 	if got := gitBranchIn(work); got != "wt" {
 		t.Fatalf("gitBranchIn worktree = %q, want wt", got)
+	}
+}
+
+// The ^B n/p hint has to appear whenever the chord has somewhere to go, which
+// is every session in the daemon's catalog — not only the ones this client has
+// already opened. Gating it on the open layouts hid the hint while the tab
+// strip was plainly offering three sessions to switch to.
+func TestSessionChordHintFollowsTheCatalog(t *testing.T) {
+	m := tabsSessionModel()
+	m.jobs.tree.focus = false
+	// Wide enough that renderStatusBar keeps the right-hand key caps at all —
+	// it drops them wholesale rather than truncating.
+	m.width = 200
+	if !strings.Contains(stripAnsi(m.renderFooter()), "^B n/p") {
+		t.Error("four sessions in the catalog should advertise the chord")
+	}
+
+	// Only one session is open, but the catalog still holds four: the chord
+	// works, so the hint stays.
+	m.layouts = map[string]*paneNode{"agent-2": m.layouts["agent-2"]}
+	if !strings.Contains(stripAnsi(m.renderFooter()), "^B n/p") {
+		t.Error("unopened sessions are still reachable; the hint must stay")
+	}
+
+	// A genuinely single-session catalog has nowhere to go.
+	m.nodes = buildTree([]string{"default"},
+		[]protocol.SessionInfo{{Name: "agent-2", Group: "default"}}, nil)
+	if strings.Contains(stripAnsi(m.renderFooter()), "^B n/p") {
+		t.Error("one session should not advertise a chord that does nothing")
 	}
 }
 

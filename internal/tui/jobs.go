@@ -102,6 +102,7 @@ type jobsView struct {
 	cursor    int
 	offset    int
 
+	session    string // empty means all sessions
 	scopeAll   bool
 	filtering  bool
 	filter     string
@@ -141,16 +142,21 @@ type jobsGTimeoutMsg struct{ id int }
 // capture (so sessions/jobs can be clicked). The returned command turns mouse
 // reporting on; callers batch it with their own commands.
 func (m model) openJobsView() (model, tea.Cmd) {
+	if m.viewMode == viewSplit && m.activeRoot() != nil {
+		m.jobs.session = m.activeSession
+	}
 	m.viewMode = viewJobs
 	// Preserve the collapse state across re-entry, but reset transient sub-state.
 	// The tree sidebar's visibility, fold state and focus survive too — coming
 	// back from a session should leave the sidebar exactly as it was left.
 	m.jobs = jobsView{
 		scopeAll: m.jobs.scopeAll,
+		session:  m.jobs.session,
 		filter:   m.jobs.filter,
 		tab:      m.jobs.tab,
 		tree: treePane{
 			show:      m.jobs.tree.show,
+			tab:       m.jobs.tree.tab,
 			focus:     m.jobs.tree.show && m.jobs.tree.focus,
 			collapsed: m.jobs.tree.collapsed,
 		},
@@ -179,6 +185,9 @@ func (m model) buildMgmtRows() []mgmtRow {
 	var out []mgmtRow
 	for _, node := range m.nodes {
 		for _, session := range node.sessions {
+			if m.jobs.session != "" && session.Name != m.jobs.session {
+				continue
+			}
 			jobs := filterJobs(node.jobs[session.Name], m.jobs.filter, "", true)
 			for _, j := range jobs {
 				if !m.jobs.tab.matches(j) {

@@ -138,7 +138,10 @@ func (s *shellState) tryReattach() (*client.Client, bool) {
 		rows = 24
 	}
 	for attempt := 0; attempt < 3; attempt++ {
-		c, err := client.AttachTerminal(s.session, s.pane, cols, rows)
+		s.mu.Lock()
+		session := s.session
+		s.mu.Unlock()
+		c, err := client.AttachTerminal(session, s.pane, cols, rows)
 		if err == nil {
 			old := s.remote
 			s.writeMu.Lock()

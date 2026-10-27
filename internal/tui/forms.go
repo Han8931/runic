@@ -44,12 +44,20 @@ type sessionForm struct {
 	nameInput    textinput.Model // session name
 	groupInput   textinput.Model
 	timeoutInput textinput.Model // job timeout duration; empty = none
+	// agentInput appears only when creating. A kind there ("claude") makes the
+	// session host that coding agent, started in its first pane; blank makes a
+	// plain session of shells. Tab cycles the configured kinds, the same way the
+	// group field cycles existing groups.
+	agentInput textinput.Model
 	// branchInput appears only when creating. A branch name there makes the
 	// session an isolated git worktree on that branch; blank makes an ordinary
 	// session. The name is required rather than defaulted so the branch you will
 	// later look for in git is one you chose.
 	branchInput textinput.Model
 	focusField  int // index into inputs()
+	// branchTouched records that the branch field was edited by hand, so
+	// choosing an agent stops prefilling it and never overwrites a typed name.
+	branchTouched bool
 }
 
 // fields returns the form's field labels in focus order.
@@ -60,7 +68,7 @@ func (f *sessionForm) fields() []string {
 	case f.jobID >= 0:
 		return []string{"name", "session", "group", "timeout"}
 	case f.creating:
-		return []string{"name", "group", "branch"}
+		return []string{"name", "group", "agent", "branch"}
 	default:
 		return []string{"name", "group"}
 	}
@@ -74,7 +82,7 @@ func (f *sessionForm) inputs() []*textinput.Model {
 	case f.jobID >= 0:
 		return []*textinput.Model{&f.labelInput, &f.nameInput, &f.groupInput, &f.timeoutInput}
 	case f.creating:
-		return []*textinput.Model{&f.nameInput, &f.groupInput, &f.branchInput}
+		return []*textinput.Model{&f.nameInput, &f.groupInput, &f.agentInput, &f.branchInput}
 	default:
 		return []*textinput.Model{&f.nameInput, &f.groupInput}
 	}
@@ -94,11 +102,20 @@ func (f *sessionForm) setFocus(i int) {
 	}
 }
 
-// groupFocused reports whether the group field has focus.
-func (f *sessionForm) groupFocused() bool {
+// focusedField names the field with focus, or "" when the form has none.
+func (f *sessionForm) focusedField() string {
 	fs := f.fields()
-	return f.focusField < len(fs) && fs[f.focusField] == "group"
+	if f.focusField < 0 || f.focusField >= len(fs) {
+		return ""
+	}
+	return fs[f.focusField]
 }
+
+// groupFocused reports whether the group field has focus.
+func (f *sessionForm) groupFocused() bool { return f.focusedField() == "group" }
+
+// agentFocused reports whether the agent field has focus.
+func (f *sessionForm) agentFocused() bool { return f.focusedField() == "agent" }
 
 func formInput(value string) textinput.Model {
 	ti := newTextInput()
@@ -121,6 +138,7 @@ func (m model) openSessionForm(creating bool, name, group string) model {
 		origGroup:   group,
 		nameInput:   ni,
 		groupInput:  formInput(group),
+		agentInput:  formInput(""),
 		branchInput: formInput(""),
 	}
 	return m
@@ -171,8 +189,8 @@ func (m model) handleSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.jobs.form = sessionForm{}
 		return m, nil
 	case "tab":
-		// On the group field, tab cycles through the existing groups so they
-		// are discoverable; ↑/↓ and shift+tab still switch fields.
+		// On the group and agent fields, tab cycles through the known values so
+		// they are discoverable; ↑/↓ and shift+tab still switch fields.
 		if f.groupFocused() {
 			if g, ok := nextGroup(m.groups, strings.TrimSpace(f.groupInput.Value()), 1); ok {
 				f.groupInput.SetValue(g)
@@ -180,12 +198,25 @@ func (m model) handleSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if f.agentFocused() {
+			m.cycleFormAgent(1)
+			return m, nil
+		}
 		f.setFocus(f.focusField + 1)
 		return m, textinput.Blink
 	case "down":
 		f.setFocus(f.focusField + 1)
 		return m, textinput.Blink
-	case "shift+tab", "up":
+	case "shift+tab":
+		// Shift+tab backs through the agent kinds while that field is focused,
+		// so a four-item list is reachable in one step from either end.
+		if f.agentFocused() {
+			m.cycleFormAgent(-1)
+			return m, nil
+		}
+		f.setFocus(f.focusField - 1)
+		return m, textinput.Blink
+	case "up":
 		f.setFocus(f.focusField - 1)
 		return m, textinput.Blink
 	case "enter":
@@ -193,8 +224,75 @@ func (m model) handleSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	in := f.inputs()[f.focusField]
+	field := f.focusedField()
 	*in, cmd = in.Update(msg)
+	// A hand-edited branch is never prefilled over: picking an agent after
+	// typing a branch must not replace what you typed.
+	if field == "branch" {
+		f.branchTouched = true
+	}
+	// The branch tracks the session name too, since the name is usually typed
+	// after the agent is picked.
+	if field == "agent" || field == "name" {
+		m.syncFormBranchToAgent()
+	}
 	return m, cmd
+}
+
+// cycleFormAgent steps the agent field through "none" and the configured kinds,
+// wrapping. Blank is a real entry in that rotation rather than something you
+// have to clear by hand, because "actually, a plain session" is a normal
+// correction to make.
+func (m *model) cycleFormAgent(dir int) {
+	f := &m.jobs.form
+	choices := append([]string{""}, m.agentKinds...)
+	cur := strings.TrimSpace(f.agentInput.Value())
+	at := 0
+	for i, c := range choices {
+		if strings.EqualFold(c, cur) {
+			at = i
+			break
+		}
+	}
+	n := len(choices)
+	f.agentInput.SetValue(choices[((at+dir)%n+n)%n])
+	f.agentInput.CursorEnd()
+	m.syncFormBranchToAgent()
+}
+
+// syncFormBranchToAgent prefills the branch with the session name once an agent
+// is chosen, since an agent usually wants its own worktree — but only while the
+// branch is still untouched, and it clears again if the agent is set back to
+// none, so the box never silently commits you to a git branch you did not ask
+// for.
+func (m *model) syncFormBranchToAgent() {
+	f := &m.jobs.form
+	if !f.creating || f.branchTouched {
+		return
+	}
+	if strings.TrimSpace(f.agentInput.Value()) == "" {
+		f.branchInput.SetValue("")
+		return
+	}
+	f.branchInput.SetValue(strings.TrimSpace(f.nameInput.Value()))
+	f.branchInput.CursorEnd()
+}
+
+// knownAgentKind reports whether kind is in the configured registry, matched
+// the way the daemon matches it. It is a courtesy check that turns a typo in
+// the free-text field into an immediate message instead of a round trip; the
+// daemon stays the authority, so an empty local registry accepts anything
+// rather than refusing every agent.
+func (m model) knownAgentKind(kind string) bool {
+	if len(m.agentKinds) == 0 {
+		return true
+	}
+	for _, k := range m.agentKinds {
+		if strings.EqualFold(k, kind) {
+			return true
+		}
+	}
+	return false
 }
 
 // nextGroup returns the entry dir (±1) steps after cur in groups, wrapping.
@@ -235,10 +333,16 @@ func (m model) submitSessionForm() (tea.Model, tea.Cmd) {
 		return m, renameGroupCmd(f.origName, name)
 	}
 	if f.creating {
+		agent := strings.TrimSpace(f.agentInput.Value())
+		if agent != "" && !m.knownAgentKind(agent) {
+			m.status = fmt.Sprintf("unknown agent %q (known: %s)",
+				agent, strings.Join(m.agentKinds, ", "))
+			return m, nil
+		}
 		// Open the new session as soon as the next tree refresh includes it.
 		m.pendingOpen = name
 		branch := strings.TrimSpace(f.branchInput.Value())
-		return m, createSessionInGroup(name, group, branch)
+		return m, createSessionInGroup(name, group, branch, agent)
 	}
 
 	var cmds []tea.Cmd
@@ -404,29 +508,72 @@ func (m model) sessionFormLines(bodyH, inner int) []string {
 	for i, lbl := range labels {
 		content = append(content, field(lbl, *inputs[i], f.focusField == i))
 	}
-	// While the group field is focused, show the existing groups as a strip so
+	// While the group or agent field is focused, show its choices as a strip so
 	// tab-cycling is a visible choice, not a blind rotation.
-	if f.groupFocused() {
+	switch {
+	case f.groupFocused():
 		choices := groupChoiceLines(m.groups, strings.TrimSpace(f.groupInput.Value()), boxInner-2)
 		if len(choices) > 0 {
 			content = append(content, "")
 			content = append(content, choices...)
 		}
+	case f.agentFocused():
+		// "none" leads the list because a plain session is still the common
+		// case, and it has to be visibly one of the options.
+		kinds := append([]string{"none"}, m.agentKinds...)
+		cur := strings.TrimSpace(f.agentInput.Value())
+		if cur == "" {
+			cur = "none"
+		}
+		choices := groupChoiceLines(kinds, cur, boxInner-2)
+		if len(choices) > 0 {
+			content = append(content, "")
+			content = append(content, choices...)
+		}
 	}
-	// The branch field is the only one whose meaning isn't obvious from its
-	// label, so explain it where it is in use.
+	// Neither the agent nor the branch field explains itself from its label, so
+	// say what they do where they are in use.
 	if f.creating {
-		content = append(content,
-			"",
-			helpStyle.Render(fitToWidth("  branch: blank for a plain session, or a name to", boxInner-2)),
-			helpStyle.Render(fitToWidth("  isolate it in its own git worktree", boxInner-2)),
-		)
+		hint := "  branch: blank for a plain session, or a name to isolate it in its own git worktree"
+		if f.agentFocused() {
+			hint = "  agent: started in the session's first pane, which keeps a shell underneath it"
+		}
+		content = append(content, "")
+		content = append(content, wrapHelpLines(hint, boxInner-2)...)
 	}
-	content = append(content,
-		"",
-		helpStyle.Render("  tab: groups · ↑/↓: switch · ⏎: save · esc: cancel"),
-	)
+	keys := "  tab: groups · ↑/↓: switch · ⏎: save · esc: cancel"
+	if f.agentFocused() {
+		keys = "  tab/shift+tab: agent · ↑/↓: switch · ⏎: save · esc: cancel"
+	}
+	content = append(content, "", helpStyle.Render(keys))
 	return centerBox(modalBox(title, content, boxInner), bodyH, inner)
+}
+
+// wrapHelpLines breaks a help sentence onto as many dim lines as it needs,
+// keeping the leading indent on each so the block reads as one note.
+func wrapHelpLines(text string, width int) []string {
+	if width < 8 {
+		return nil
+	}
+	indent := text[:len(text)-len(strings.TrimLeft(text, " "))]
+	var lines []string
+	line := indent
+	for _, word := range strings.Fields(text) {
+		candidate := line + word
+		if len(line) > len(indent) {
+			candidate = line + " " + word
+		}
+		if lipgloss.Width(candidate) > width && len(line) > len(indent) {
+			lines = append(lines, helpStyle.Render(fitToWidth(line, width)))
+			line = indent + word
+			continue
+		}
+		line = candidate
+	}
+	if strings.TrimSpace(line) != "" {
+		lines = append(lines, helpStyle.Render(fitToWidth(line, width)))
+	}
+	return lines
 }
 
 // groupChoiceLines renders the existing groups as wrapped strip lines; the

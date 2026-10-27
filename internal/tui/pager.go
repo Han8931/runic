@@ -349,10 +349,11 @@ func (m model) renderPager(w, h int) string {
 	if p.searching {
 		lines = append(lines, fitToWidth(inputStyle.Render("/")+m.textInput.View(), w))
 	} else {
-		lines = append(lines, renderHintBar([]keyHint{
+		hintBar, _ := renderHintBar([]keyHint{
 			{"j/k", "scroll"}, {"gg/G", "top/bottom"}, {"^d/^u", "half page"},
 			{"/", "search"}, {"n", "next match"}, {"i", "job info"}, {"q", "back"},
-		}, w))
+		}, w)
+		lines = append(lines, hintBar)
 	}
 	val := func(s string) string { return statusValueStyle.Render(" " + s + " ") }
 	state := "finished"

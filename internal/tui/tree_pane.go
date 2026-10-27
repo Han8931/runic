@@ -18,8 +18,9 @@ import (
 // hierarchy.
 type treePane struct {
 	show      bool
-	focus     bool // keys drive the tree instead of the list
-	zoom      bool // NerdTree-style `A`: expand the pane to fill the whole box
+	focus     bool    // keys drive the tree instead of the list
+	zoom      bool    // NerdTree-style `A`: expand the pane to fill the whole box
+	tab       sideTab // which view the pane shows: Spaces or Agents
 	cursor    int
 	rows      []treeRow       // derived visible rows (honors fold state)
 	collapsed map[string]bool // node key → folded; survives the live refresh
@@ -57,12 +58,18 @@ const (
 	treeGroup treeRowKind = iota
 	treeSession
 	treeJob
+	// treeAgent is a row in the Agents view: one live pane, flat, with no
+	// hierarchy above it.
+	treeAgent
 )
 
 type treeRow struct {
 	kind    treeRowKind
 	group   string
 	session string
+	// pane is the daemon-side pane id, set on agent rows only. It is what
+	// distinguishes two agents running in the same session.
+	pane    string
 	job     protocol.JobInfo
 	key     string // fold key (group/session rows); "" for jobs
 	hasKids bool
@@ -74,6 +81,14 @@ type treeRow struct {
 	// on "needs you" rows: an agent that has been blocked for 20 minutes is a
 	// different problem from one that just stopped.
 	since time.Time
+	// seen marks an attention state already acknowledged by attaching. Only an
+	// error carries it; such a row keeps its color and note but stops behaving
+	// like an alert.
+	seen bool
+	// agentKind is the kind of agent the session hosts ("claude"), set on agent
+	// rows so the row can say which agent it is rather than repeating the
+	// session name already printed above it.
+	agentKind string
 	// worktree/branch are set on a session row isolated in its own git worktree.
 	worktree string
 	branch   string
@@ -88,9 +103,13 @@ const treePaneWidth = 26
 func groupKey(g string) string      { return "g\x00" + g }
 func sessionKey(g, s string) string { return "s\x00" + g + "\x00" + s }
 
-// buildTreeRows flattens the group→session→job hierarchy into visible rows,
-// skipping the children of any collapsed node.
+// buildTreeRows produces the sidebar's visible rows for whichever tab is
+// showing: the flat agent list, or the group→session→job hierarchy with the
+// children of collapsed nodes skipped.
 func (m model) buildTreeRows() []treeRow {
+	if m.jobs.tree.tab == sideAgents {
+		return m.agentRows()
+	}
 	col := m.jobs.tree.collapsed
 	var rows []treeRow
 	for _, node := range m.nodes {
@@ -111,15 +130,17 @@ func (m model) buildTreeRows() []treeRow {
 			sk := sessionKey(node.group, s.Name)
 			js := node.jobs[s.Name]
 			running, queued, _, failed := jobStateCounts(js)
+			urgentAgents, calmAgents := m.sessionAgentRows(node.group, s.Name)
 			rows = append(rows, treeRow{
 				kind:      treeSession,
 				group:     node.group,
 				session:   s.Name,
 				key:       sk,
-				hasKids:   len(js) > 0,
+				hasKids:   (len(js) > 0 || len(urgentAgents)+len(calmAgents) > 0) && m.viewMode != viewSplit,
 				attention: s.Attention,
 				note:      s.AttentionNote,
 				since:     s.AttentionSince,
+				seen:      s.AttentionSeen,
 				worktree:  s.Worktree,
 				branch:    s.Branch,
 				running:   running,
@@ -127,12 +148,18 @@ func (m model) buildTreeRows() []treeRow {
 				failed:    failed,
 				total:     len(js),
 			})
-			if col[sk] {
+			if col[sk] || m.viewMode == viewSplit {
 				continue
 			}
+			// An agent needing you comes first, above the session's jobs: it is
+			// the one child you might have to act on. The quiet ones sit at the
+			// bottom, under the jobs, where they stay out of the way until they
+			// have something to say.
+			rows = append(rows, urgentAgents...)
 			for _, j := range js {
 				rows = append(rows, treeRow{kind: treeJob, group: node.group, session: s.Name, job: j})
 			}
+			rows = append(rows, calmAgents...)
 		}
 	}
 	return rows
@@ -144,7 +171,16 @@ func (m *model) refreshTreeRows() {
 	if m.jobs.tree.collapsed == nil {
 		m.jobs.tree.collapsed = map[string]bool{}
 	}
+	previous, havePrevious := m.jobs.tree.current()
 	m.jobs.tree.rows = m.buildTreeRows()
+	if havePrevious {
+		for i, r := range m.jobs.tree.rows {
+			if r.kind == previous.kind && r.group == previous.group && r.session == previous.session && r.pane == previous.pane && (r.kind != treeJob || r.job.ID == previous.job.ID) {
+				m.jobs.tree.cursor = i
+				break
+			}
+		}
+	}
 	if m.jobs.tree.cursor >= len(m.jobs.tree.rows) {
 		m.jobs.tree.cursor = len(m.jobs.tree.rows) - 1
 	}
@@ -194,6 +230,11 @@ func (m model) handleTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 
 	t := &m.jobs.tree
 	switch msg.String() {
+	case "q":
+		// The sidebar used to swallow `q`, so the one key that reliably means
+		// "I am done" did nothing in the pane you are most likely to be sitting
+		// in. Nothing is lost by quitting: daemon-hosted shells keep running.
+		return m, tea.Quit, true
 	case "esc":
 		if t.zoom {
 			t.zoom = false
@@ -261,6 +302,11 @@ func (m model) openTreeMenu() (tea.Model, tea.Cmd, bool) {
 			{"a", "add session", menuAdd},
 			{"r", "rename session", menuRename},
 			{"d", "delete session", menuDelete},
+		}
+	case treeAgent:
+		items = []treeMenuItem{
+			{"o", "attach to agent", menuOpen},
+			{"r", "rename session", menuRename},
 		}
 	case treeJob:
 		items = []treeMenuItem{
@@ -378,8 +424,11 @@ func (m model) treeActivate() (tea.Model, tea.Cmd, bool) {
 	case treeGroup:
 		(&m).treeToggleFold()
 		return m, nil, true
-	case treeSession:
-		nm, cmd := m.openSession(r.session)
+	case treeSession, treeAgent:
+		// An agent row opens *its own pane*; a session row opens the session's
+		// first. Attaching is also how you acknowledge a waiting pane, so this
+		// is the action the Agents view exists for.
+		nm, cmd := m.openSessionPane(r.session, r.pane)
 		return nm, cmd, true
 	case treeJob:
 		return m, openPagerCmd(r.job), true
@@ -396,7 +445,7 @@ func (m model) treeEdit() (tea.Model, tea.Cmd, bool) {
 	switch r.kind {
 	case treeGroup:
 		return m.openGroupRenameForm(r.group), textinput.Blink, true
-	case treeSession, treeJob:
+	case treeSession, treeJob, treeAgent:
 		return m.openSessionForm(false, r.session, r.group), textinput.Blink, true
 	}
 	return m, nil, true
@@ -424,10 +473,24 @@ func (m *model) treeDelete() {
 // sidebar width normally, or the whole box when zoomed (`A`).
 func (m model) treePaneLines(h, width int) []string {
 	t := m.jobs.tree
-	off := 0
-	if t.cursor >= h {
-		off = t.cursor - h + 1
+	// An empty Agents tab is the normal state until something calls `ru mark`,
+	// so the space says how it gets filled rather than just sitting blank.
+	if t.tab == sideAgents && len(t.rows) == 0 {
+		headline, hint := agentEmptyMessage()
+		out := make([]string, 0, h)
+		for i := 0; i < h; i++ {
+			switch i {
+			case h / 2:
+				out = append(out, treeSummaryStyle.Render(centerText(headline, width)))
+			case h/2 + 1:
+				out = append(out, treeEmptyStyle.Render(centerText(hint, width)))
+			default:
+				out = append(out, strings.Repeat(" ", width))
+			}
+		}
+		return out
 	}
+	off := treeScrollOffset(t.cursor, h)
 	out := make([]string, 0, h)
 	for i := 0; i < h; i++ {
 		idx := off + i
@@ -441,6 +504,25 @@ func (m model) treePaneLines(h, width int) []string {
 	}
 	return out
 }
+
+// treeScrollOffset is the index of the sidebar's first visible row, scrolled
+// just far enough to keep the cursor on screen. Click hit-testing uses the same
+// function as the renderer so the row under the pointer is the row that gets
+// selected.
+func treeScrollOffset(cursor, h int) int {
+	if h > 0 && cursor >= h {
+		return cursor - h + 1
+	}
+	return 0
+}
+
+// treeBodyTopLine is the terminal row where the sidebar's first tree row sits:
+// below the pane's top border and its tab strip.
+const treeBodyTopLine = 2
+
+// treeBodyHeight is how many tree rows the sidebar shows for a pane row of
+// height paneH — the pane minus its two borders and its tab strip.
+func treeBodyHeight(paneH int) int { return max(0, paneH-3) }
 
 // renderTreeRow draws one sidebar row as [cursor gutter][label …][chip]. The
 // label is the hierarchy; the right-hand chip is the row's status — how long an
@@ -466,17 +548,61 @@ func (m model) renderTreeRow(r treeRow, selected bool, width int) string {
 			// tree's action menu.
 			text += " ⊕"
 		}
+		if r.session == m.activeSession {
+			text = "› " + text
+		}
 		style = sessionStyle
 		if reported {
 			style = attnStyle
 		}
 		// An unanswered agent reports its age, which outranks job counts: it is
-		// the number the sidebar exists to show.
-		if r.attention.NeedsYou() && !r.since.IsZero() {
+		// the number the sidebar exists to show. Once acknowledged it gives the
+		// column back to the job counts — the error is still on the row, in its
+		// color, but it is no longer the thing demanding a number.
+		if protocol.Unresolved(r.attention, r.seen) && !r.since.IsZero() {
 			chip, chipStyle = waitAge(r.since), attnStyle
 		} else {
 			chip, chipStyle = treeCountChip(r)
 		}
+	case treeAgent:
+		// ◆ marks an agent. The shape is what matters: a session row leads with
+		// a fold mark and an agent with ◆, so the two can no longer be mistaken
+		// for each other even in a terminal with no color, or by a reader who
+		// cannot tell violet from amber. Previously both rendered as an
+		// attention glyph plus a name in the same style, which is exactly why
+		// they looked alike.
+		//
+		// The row is drawn in one style (the renderer strips the label's own
+		// styling before padding it), so color carries urgency and falls back to
+		// violet — "this is an agent" survives the agent being calm.
+		glyph, attnStyle, reported := attentionMark(r.attention)
+		if m.jobs.tree.tab == sideAgents {
+			// The flat list is all agents, so there is nothing to tell apart and
+			// the column is better spent on the state glyph — which survives a
+			// terminal with no color, where ◆ on every row would not. The row
+			// also has to name its own session: no session row sits above it.
+			text = glyph + " " + m.agentLabel(r)
+		} else {
+			// Nested among its session's jobs, at the depth jobs use. Here the
+			// marker earns the column: it is what stops an agent row reading as
+			// another session.
+			text = "   ◆ " + m.agentTreeLabel(r)
+		}
+		switch {
+		case protocol.Unresolved(r.attention, r.seen):
+			style = attnStyle
+		case reported && r.attention == protocol.AttentionError:
+			style = attnStyle // acknowledged, still broken
+		case r.attention == protocol.AttentionWorking:
+			style = agentStyle
+		default:
+			style = agentDimStyle
+		}
+		// The note stays out of the row. In 26 columns, a name and an age leave
+		// room for about one word of it, and "tests failed" clipped to "tests"
+		// reads as part of the name rather than as a message. The detail pane
+		// spells it out instead, as it does for a session row.
+		chip, chipStyle = agentChip(r)
 	case treeJob:
 		label := r.job.Label
 		if label == "" {
@@ -625,6 +751,8 @@ func treeMenuTarget(r treeRow) string {
 	switch r.kind {
 	case treeGroup:
 		return "group " + r.group
+	case treeAgent:
+		return "agent " + r.session + " · " + r.pane
 	case treeSession:
 		if r.branch != "" {
 			return "session " + r.session + " ⊕ " + r.branch
@@ -652,31 +780,13 @@ func foldMark(collapsed, hasKids bool) string {
 	return "▾"
 }
 
-// treeHeaderCell renders the sidebar's column header in the same style as the
-// job table header, so the whole top row reads as one unit: bright when the
-// tree is focused, muted-but-legible otherwise. It carries the inbox count —
-// how many sessions are waiting on you — because that number is the reason to
-// look at the sidebar at all.
+// treeHeaderCell renders the sidebar's header: the Spaces / Agents tab strip,
+// laid out like the Jobs pane's so the whole top row of the screen reads as one
+// band of tabs. The strip sits on the table-header fill and dims with the rest
+// of the pane when the tree does not have focus.
+// Focus is not signalled here: the pane's border takes the accent, which is the
+// established focus cue for every pane on this screen.
 func (m model) treeHeaderCell(width int) string {
-	s := jobsHeaderStyle
-	if !m.jobs.tree.focus {
-		s = jobsHeaderStyle.Foreground(cFgMuted)
-	}
-	needYou := 0
-	for _, n := range m.nodes {
-		for _, sess := range n.sessions {
-			if sess.Attention.NeedsYou() {
-				needYou++
-			}
-		}
-	}
-	chip := ""
-	if needYou > 0 {
-		chip = fmt.Sprintf("%d!", needYou)
-	}
-	body := padBetween(" SESSIONS", chip, width)
-	if needYou > 0 {
-		return s.Render(body.left) + jobsHeaderStyle.Foreground(cAmber).Render(body.right)
-	}
-	return s.Render(body.left + body.right)
+	strip, _ := m.renderSideTabStrip(width)
+	return strip
 }

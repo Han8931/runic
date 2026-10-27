@@ -99,6 +99,9 @@ func (m model) tabCount(t jobsTab) int {
 	n := 0
 	for _, node := range m.nodes {
 		for _, s := range node.sessions {
+			if m.jobs.session != "" && s.Name != m.jobs.session {
+				continue
+			}
 			for _, j := range filterJobs(node.jobs[s.Name], m.jobs.filter, "", true) {
 				if t.matches(j) {
 					n++

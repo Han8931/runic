@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,8 +14,12 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "loading..."
 	}
+	// A pending bell leads the frame. It rides along with the frame's single
+	// write instead of going to stdout separately, which is what keeps it from
+	// landing inside one of the renderer's escape sequences. BEL occupies no
+	// cell, so it does not disturb the layout.
 	if m.viewMode == viewJobs {
-		return m.renderJobsView(m.width, m.height)
+		return m.bellPrefix() + m.renderJobsView(m.width, m.height)
 	}
 
 	var b strings.Builder
@@ -36,8 +39,24 @@ func (m model) View() string {
 	// The region spans the header line plus the content rows; line 0 is the
 	// box top border, lines 1..contentHeight are the content/bottom rows.
 	regionLines := m.renderTermRegion(regionW, contentHeight+1)
+	sideW := m.termSidebarWidth()
+	var sidebar []string
+	if sideW > 0 {
+		sidebar = m.renderSessionSidebar(sideW, contentHeight+1)
+	}
+	if m.jobs.form.active || m.jobs.tree.menu.active {
+		regionLines = m.renderListPanel(regionW, contentHeight+1, true)
+	}
+	if !m.jobs.form.active && !m.jobs.tree.menu.active {
+		strip, _ := m.sessionStrip(regionW, m.sessionNames(), m.activeSession)
+		regionLines[0] = strip
+	}
 
 	for row := 0; row < contentHeight+1; row++ {
+		if sideW > 0 {
+			b.WriteString(sidebar[row])
+			b.WriteString(" ")
+		}
 		if row < len(regionLines) {
 			b.WriteString(regionLines[row])
 		} else {
@@ -58,18 +77,25 @@ func (m model) View() string {
 	}
 
 	if m.inputMode == inputNone {
-		b.WriteString(m.renderFooter())
+		if m.jobs.confirm.kind != confirmNone || m.jobs.form.active || m.jobs.tree.menu.active {
+			b.WriteString(m.jobsFooterLine(m.width))
+		} else {
+			b.WriteString(m.renderFooter())
+		}
 	}
 
-	return b.String()
+	return m.bellPrefix() + b.String()
 }
 
 // renderTermRegion renders the whole right-hand terminal region — the rounded
-// outer box (with the active session as a title), every tiled pane's contents,
-// and the separators between panes — into exactly `height` styled lines, each
-// `width` display columns wide.
+// outer box, every tiled pane's contents, and the separators between panes —
+// into exactly `height` styled lines, each `width` display columns wide.
+//
+// The box's top line is a placeholder: View always replaces it, with the
+// session-tab strip or (with a form open) the list panel, so nothing titled is
+// drawn here. The pane count the title used to carry is on the status bar.
 func (m model) renderTermRegion(width, height int) []string {
-	focused := m.focus == paneTerm
+	focused := m.focus == paneTerm && !m.jobs.tree.focus
 
 	grid := make([][]string, height)
 	for y := range grid {
@@ -184,7 +210,7 @@ func (m model) drawOuterBorder(grid [][]string, width, height int, st lipgloss.S
 	if width < 2 || height < 2 {
 		return
 	}
-	top := boxedTop(width, m.termTitle(), st)
+	top := boxedTop(width, "", st)
 	bottom := boxedBottom(width, st)
 	for x, ch := range []rune(stripAnsi(top)) {
 		if x < width {
@@ -200,14 +226,6 @@ func (m model) drawOuterBorder(grid [][]string, width, height int, st lipgloss.S
 		grid[y][0] = st.Render("│")
 		grid[y][width-1] = st.Render("│")
 	}
-}
-
-func (m model) termTitle() string {
-	title := " " + m.activeSession + " "
-	if n := m.paneCount(); n > 1 {
-		title = fmt.Sprintf(" %s · %d panes ", m.activeSession, n)
-	}
-	return title
 }
 
 func boxedTop(width int, title string, st lipgloss.Style) string {

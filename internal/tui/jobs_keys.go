@@ -89,6 +89,16 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	key := msg.String()
+	if !m.jobs.tree.menu.active {
+		if key == "[" {
+			m.cycleJobsSession(-1)
+			return m, nil
+		}
+		if key == "]" {
+			m.cycleJobsSession(1)
+			return m, nil
+		}
+	}
 
 	// Ctrl+W chord: vim-style focus movement between the tree sidebar (left) and
 	// the job list (right), mirroring the split-view pane nav.
@@ -130,15 +140,32 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startPending(',')
 	}
 
-	// Tab / Shift+Tab roll the job table through its views (All, Running, …)
-	// from either pane, as in gorae. With the list focused, ←/→ do the same.
+	// Tab / Shift+Tab roll the focused pane through its own views: the sidebar
+	// between Spaces and Agents, the table through All, Running, … Binding the
+	// key to the focused pane keeps one gesture for "next view" on a screen
+	// where both panes have tabs. ←/→ do the same, but only from the table —
+	// in the sidebar they stay fold keys.
 	if !m.jobs.tree.menu.active {
-		listFocused := !m.jobs.tree.show || !m.jobs.tree.focus
+		treeFocused := m.jobs.tree.show && m.jobs.tree.focus
 		switch {
-		case key == "tab", key == "right" && listFocused:
+		case key == "tab":
+			if treeFocused {
+				(&m).cycleSideTab(1)
+			} else {
+				(&m).cycleTab(1)
+			}
+			return m, nil
+		case key == "shift+tab":
+			if treeFocused {
+				(&m).cycleSideTab(-1)
+			} else {
+				(&m).cycleTab(-1)
+			}
+			return m, nil
+		case key == "right" && !treeFocused:
 			(&m).cycleTab(1)
 			return m, nil
-		case key == "shift+tab", key == "left" && listFocused:
+		case key == "left" && !treeFocused:
 			(&m).cycleTab(-1)
 			return m, nil
 		}
@@ -314,6 +341,9 @@ const mgmtTabStripLine = 1
 // handleMouse maps clicks and wheel scrolls on the management screen to row
 // selection/activation. Mouse events are only captured while this screen shows.
 func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.viewMode == viewSplit {
+		return m.handleSessionMouse(msg)
+	}
 	if m.viewMode != viewJobs || m.jobs.mode != jobsTable || m.jobs.form.active ||
 		m.jobs.settings.active || m.jobs.filtering {
 		return m, nil
@@ -333,7 +363,35 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		l := m.jobsLayout()
+		// The hint bar sits directly under the panes and lists the keys that
+		// apply right now, so it doubles as this screen's toolbar.
+		if msg.Y == l.paneH {
+			if _, spans := m.jobsFooterSpans(m.width); spans != nil {
+				if h, ok := hintAt(spans, msg.X); ok {
+					if nm, cmd, handled := m.pressHint(h); handled {
+						return nm, cmd
+					}
+				}
+			}
+			return m, nil
+		}
+		// A click inside the Sessions pane: its tab strip switches the view,
+		// its rows take focus and move the cursor — the same two gestures the
+		// Jobs pane answers to.
+		if l.showTree && msg.X < l.treeW {
+			return m.clickTree(msg, l)
+		}
 		if l.zoom || msg.X <= l.listX || msg.X >= l.listX+l.listW-1 {
+			return m, nil
+		}
+		if msg.Y == 0 {
+			_, spans := m.jobsSessionStrip(l.listW - 2)
+			for _, sp := range spans {
+				if msg.X-l.listX-1 >= sp.start && msg.X-l.listX-1 < sp.end {
+					m.selectJobsSession(sp.session)
+					break
+				}
+			}
 			return m, nil
 		}
 		if msg.Y == mgmtTabStripLine {
@@ -361,7 +419,50 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.jobs.cursor = idx
 		m.jobs.cursorKey = rowKey(m.jobs.rows[idx])
 		m.jobs.offset = clampOffset(idx, m.jobs.offset, m.jobsBodyHeight(), len(m.jobs.rows))
+		// Double-click opens, the way it does everywhere else. A single click
+		// still only selects, so a stray one cannot launch anything.
+		if (&m).doubleClick("job|" + rowKey(m.jobs.rows[idx])) {
+			return m.activateRow()
+		}
 		return m, nil
+	}
+	return m, nil
+}
+
+// clickTree handles a left click inside the Sessions pane: the tab strip
+// switches view, a tree row takes focus and moves the cursor there. Clicking a
+// row only selects it — opening stays on Enter, so a stray click can't launch
+// into a session.
+func (m model) clickTree(msg tea.MouseMsg, l jobsLayout) (tea.Model, tea.Cmd) {
+	inner := l.treeW - 2
+	if msg.Y == mgmtTabStripLine {
+		_, spans := m.renderSideTabStrip(inner)
+		x := msg.X - 1 // the pane's left border
+		for _, sp := range spans {
+			if x >= sp.start && x < sp.end {
+				m.jobs.tree.focus = true
+				(&m).switchSideTab(sp.tab)
+				break
+			}
+		}
+		return m, nil
+	}
+	bodyH := treeBodyHeight(l.paneH)
+	if msg.Y < treeBodyTopLine || msg.Y >= treeBodyTopLine+bodyH {
+		return m, nil
+	}
+	idx := treeScrollOffset(m.jobs.tree.cursor, bodyH) + (msg.Y - treeBodyTopLine)
+	if idx < 0 || idx >= len(m.jobs.tree.rows) {
+		return m, nil
+	}
+	m.jobs.tree.focus = true
+	m.jobs.tree.cursor = idx
+	// Double-click opens what a single click selected: the standard gesture,
+	// and the one people try first. The single-click guard stays, so a stray
+	// click still cannot drop you into a session.
+	if (&m).doubleClick(treeRowTarget(m.jobs.tree.rows[idx])) {
+		nm, cmd, _ := m.treeActivate()
+		return nm, cmd
 	}
 	return m, nil
 }
@@ -373,8 +474,10 @@ func (m model) leaveManagement() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.viewMode = viewSplit
-	m.mouseOn = false
-	return m, tea.Batch(clearScreenCmd(), tea.DisableMouse)
+	m.jobs.tree.focus = false
+	m.refreshTreeRows()
+	m.mouseOn = true
+	return m, tea.Batch(clearScreenCmd(), tea.EnableMouseCellMotion)
 }
 
 // activateRow handles Enter on a job row: open its output pager (like `o`).
@@ -390,13 +493,26 @@ func (m model) activateRow() (tea.Model, tea.Cmd) {
 // openSession leaves the management view and activates the given session,
 // building or restoring its terminal panes.
 func (m model) openSession(name string) (tea.Model, tea.Cmd) {
+	return m.openSessionPane(name, "")
+}
+
+// openSessionPane is openSession with a target: a non-empty pane focuses that
+// pane rather than the session's first leaf. Opening a blocked agent should
+// land on the agent, not merely in its neighbourhood — the pane is the thing
+// that is waiting on you.
+func (m model) openSessionPane(name, pane string) (tea.Model, tea.Cmd) {
 	if name == "" {
 		return m, nil
 	}
 	m.viewMode = viewSplit
-	m.mouseOn = false
+	m.jobs.tree.focus = false
+	m.refreshTreeRows()
+	m.mouseOn = true
 	nm, cmd := m.activateSession(name)
-	return nm, tea.Batch(cmd, tea.DisableMouse)
+	if pane != "" {
+		(&nm).focusPaneNamed(pane)
+	}
+	return nm, tea.Batch(cmd, tea.EnableMouseCellMotion)
 }
 
 // chordSortMode maps the second key of an `s` sort chord to its field.

@@ -515,31 +515,77 @@ func TestClampScroll(t *testing.T) {
 }
 
 func TestComputeJobColumns(t *testing.T) {
-	c := computeJobColumns(80)
-	if c.command < 1 {
-		t.Fatalf("command width must be positive, got %d", c.command)
+	c := computeJobColumns(80, false)
+	if c.work < 1 {
+		t.Fatalf("work width must be positive, got %d", c.work)
 	}
 	// narrow terminal must not panic or produce negative widths
 	for _, w := range []int{40, 30, 20, 10, 5} {
-		c := computeJobColumns(w)
-		if c.command < 1 || c.session < 0 {
+		c := computeJobColumns(w, false)
+		if c.work < 1 || c.session < 0 || c.group < 0 || c.timeout < 0 {
 			t.Fatalf("bad columns at inner=%d: %+v", w, c)
 		}
 	}
 }
 
-func TestFormatJobRowWidth(t *testing.T) {
-	c := computeJobColumns(80)
-	row := formatJobRow(jobsFixture()[0], "work", c)
-	if w := len(stripAnsi(row)); w == 0 {
-		t.Fatal("empty row")
+// The columns a job is *identified* by must survive every width. The old fixed
+// budget reserved all seven columns and clawed space back from the text ones,
+// so below ~100 terminal columns WORK collapsed to one character and the table
+// no longer said what any job was.
+func TestComputeJobColumnsKeepsWorkReadable(t *testing.T) {
+	for _, inner := range []int{48, 60, 68, 88, 120, 200} {
+		c := computeJobColumns(inner, false)
+		if c.work < 12 {
+			t.Errorf("inner=%d: work=%d — too narrow to identify a job (%+v)", inner, c.work, c)
+		}
+		// STATE and TIME are what the table is scanned by; they never drop.
+		if c.state <= 0 || c.tm <= 0 || c.id <= 0 {
+			t.Errorf("inner=%d: core columns must never be hidden: %+v", inner, c)
+		}
 	}
 }
 
-func TestComputeJobColumnsHasGroupSession(t *testing.T) {
-	c := computeJobColumns(120)
-	if c.group <= 0 || c.session <= 0 {
-		t.Fatalf("group/session columns must be positive, got group=%d session=%d", c.group, c.session)
+// The budget has to add up: the rendered row must occupy exactly the width it
+// was given, with no column left holding empty space.
+func TestJobRowFitsItsBudget(t *testing.T) {
+	j := protocol.JobInfo{ID: 7, Command: "go test ./internal/... -race", Session: "backend",
+		State: protocol.StateRunning}
+	for _, inner := range []int{48, 68, 88, 120} {
+		c := computeJobColumns(inner, false)
+		if w := lipgloss.Width(stripAnsi(formatJobRow(j, "work", c))); w != inner {
+			t.Errorf("inner=%d: row rendered %d columns", inner, w)
+		}
+	}
+}
+
+// Scope columns are dropped on narrow terminals rather than squeezed, and come
+// back when there is room.
+func TestComputeJobColumnsDropsScopeWhenNarrow(t *testing.T) {
+	wide := computeJobColumns(120, false)
+	if wide.group <= 0 || wide.session <= 0 {
+		t.Errorf("a wide table should carry group and session, got %+v", wide)
+	}
+	narrow := computeJobColumns(48, false)
+	if narrow.group != 0 || narrow.session != 0 {
+		t.Errorf("a narrow table should drop group/session entirely, got %+v", narrow)
+	}
+}
+
+// TIMEOUT is opt-in per job, so it only earns a column when something has one.
+func TestComputeJobColumnsTimeoutOnlyWhenUsed(t *testing.T) {
+	if c := computeJobColumns(120, false); c.timeout != 0 {
+		t.Errorf("no job has a timeout, so the column should be hidden: %+v", c)
+	}
+	if c := computeJobColumns(120, true); c.timeout <= 0 {
+		t.Errorf("a job with a timeout should get the column: %+v", c)
+	}
+}
+
+func TestFormatJobRowWidth(t *testing.T) {
+	c := computeJobColumns(80, false)
+	row := formatJobRow(jobsFixture()[0], "work", c)
+	if w := len(stripAnsi(row)); w == 0 {
+		t.Fatal("empty row")
 	}
 }
 
@@ -550,12 +596,50 @@ func TestFormatJobRowShowsGroupAndSession(t *testing.T) {
 		Session: "build",
 		State:   protocol.StateFinished,
 	}
-	row := stripAnsi(formatJobRow(j, "ci", computeJobColumns(120)))
+	row := stripAnsi(formatJobRow(j, "ci", computeJobColumns(120, false)))
 	if !strings.Contains(row, "ci") {
 		t.Errorf("row missing group: %q", row)
 	}
 	if !strings.Contains(row, "build") {
 		t.Errorf("row missing session: %q", row)
+	}
+}
+
+// An unnamed job shows its command once. The old NAME+COMMAND pair printed the
+// same text in both columns, which is what starved the table of width.
+func TestWorkColumnDoesNotDuplicateCommand(t *testing.T) {
+	j := protocol.JobInfo{ID: 1, Command: "golangci-lint", State: protocol.StateQueued}
+	row := stripAnsi(formatJobRow(j, "work", computeJobColumns(120, false)))
+	if n := strings.Count(row, "golangci-lint"); n != 1 {
+		t.Errorf("unnamed job should show its command once, got %d times: %q", n, row)
+	}
+}
+
+// A named job leads with its name and still shows the command when both fit.
+func TestWorkColumnShowsNameAndCommand(t *testing.T) {
+	j := protocol.JobInfo{ID: 1, Label: "lint", Command: "golangci-lint run", State: protocol.StateQueued}
+	row := stripAnsi(formatJobRow(j, "work", computeJobColumns(120, false)))
+	if !strings.Contains(row, "lint") || !strings.Contains(row, "golangci-lint run") {
+		t.Errorf("a named job should show both name and command when they fit: %q", row)
+	}
+}
+
+// The header must describe the columns actually rendered: a hidden column
+// contributes no title and no separator.
+func TestJobsHeaderMatchesVisibleColumns(t *testing.T) {
+	m := model{viewMode: viewJobs}
+	narrow := computeJobColumns(48, false)
+	h := stripAnsi(m.jobsHeaderRow(narrow))
+	for _, gone := range []string{"GROUP", "SESSION", "TIMEOUT"} {
+		if strings.Contains(h, gone) {
+			t.Errorf("narrow header should not carry %s: %q", gone, h)
+		}
+	}
+	if !strings.Contains(h, "WORK") || !strings.Contains(h, "STATE") {
+		t.Errorf("narrow header lost a core column: %q", h)
+	}
+	if w := lipgloss.Width(h); w != 48 {
+		t.Errorf("header rendered %d columns, want 48", w)
 	}
 }
 

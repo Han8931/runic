@@ -63,8 +63,8 @@ func TestTreeRowsAndFold(t *testing.T) {
 	}
 }
 
-// `,n` toggles the sidebar and focuses it; tab rolls the views rather than
-// moving focus, so the tree keeps it.
+// `,n` toggles the sidebar and focuses it; tab rolls the focused pane's own
+// views rather than moving focus, so the tree keeps it.
 func TestTreeToggleAndFocus(t *testing.T) {
 	m := model{viewMode: viewJobs}
 	m.nodes = buildTree([]string{"default"}, []protocol.SessionInfo{{Name: "default", Group: "default"}}, nil)
@@ -77,14 +77,24 @@ func TestTreeToggleAndFocus(t *testing.T) {
 	if !m.jobs.tree.show || !m.jobs.tree.focus {
 		t.Fatalf(",n should show the tree and focus it")
 	}
-	// tab is not a tree key any more: the jobs handler rolls the view instead.
+	// tab is not a tree key any more: the jobs handler rolls the sidebar's own
+	// views, and leaves the job table's tab where it was.
 	if _, _, done := m.handleTreeKey(keyNamed("tab")); !done {
 		t.Fatalf("a focused tree swallows unbound keys")
 	}
 	nm, _ = m.handleJobsKey(keyNamed("tab"))
 	m = nm.(model)
-	if !m.jobs.tree.focus || m.jobs.tab != tabRunning {
-		t.Fatalf("tab should roll the view (got %v) and leave tree focus alone", m.jobs.tab)
+	if !m.jobs.tree.focus || m.jobs.tree.tab != sideAgents {
+		t.Fatalf("tab in the sidebar should roll to Agents (got %v) and keep tree focus", m.jobs.tree.tab)
+	}
+	if m.jobs.tab != tabAll {
+		t.Fatalf("tab in the sidebar should leave the job view alone, got %v", m.jobs.tab)
+	}
+	// Roll back to Spaces so the rest of the case sees the tree view.
+	nm, _ = m.handleJobsKey(keyNamed("shift+tab"))
+	m = nm.(model)
+	if m.jobs.tree.tab != sideSpaces {
+		t.Fatalf("shift+tab should roll back to Spaces, got %v", m.jobs.tree.tab)
 	}
 	// Hiding clears focus — the leader chord works from anywhere, incl. tree focus.
 	nm, _ = m.handleJobsKey(keyRune(','))

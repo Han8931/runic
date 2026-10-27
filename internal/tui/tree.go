@@ -80,9 +80,12 @@ func groupSummary(node treeNode) string {
 // urgent first; everything else keeps the daemon's name order. Only "needs you"
 // states reorder, so a session merely working away never shuffles itself under
 // your cursor.
+// An acknowledged error does not float: it is still broken and still red, but
+// it has stopped being news, so it keeps its place rather than sitting above
+// the sessions you have not looked at yet.
 func sortSessionsByAttention(sessions []protocol.SessionInfo) {
 	rank := func(s protocol.SessionInfo) protocol.Attention {
-		if s.Attention.NeedsYou() {
+		if protocol.Unresolved(s.Attention, s.AttentionSeen) {
 			return s.Attention
 		}
 		return protocol.AttentionNone
