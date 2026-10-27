@@ -220,3 +220,37 @@ func ansiCodes(s string) string {
 		s = s[i+j+1:]
 	}
 }
+
+// `!` acknowledges without attaching. Attaching is a heavy way to say "noted"
+// — it takes over the screen — and on a waiting agent it is easy to mistake for
+// having answered, which is why there has to be a way to say it from the list.
+func TestAckFromTheSidebar(t *testing.T) {
+	m := sideTabsModel()
+	m.jobs.tree.tab = sideAgents
+	m.refreshTreeRows()
+
+	// The fixture's first row is the unresolved error.
+	r, ok := m.jobs.tree.current()
+	if !ok || !protocol.Unresolved(r.attention, r.seen) {
+		t.Fatalf("expected an unresolved agent under the cursor, got %+v", r)
+	}
+	_, cmd, handled := m.handleTreeKey(keyRune('!'))
+	if !handled {
+		t.Fatal("the sidebar should handle !")
+	}
+	if cmd == nil {
+		t.Fatal("! on an unresolved agent should send an acknowledgement")
+	}
+
+	// A row with nothing outstanding has nothing to acknowledge, so the key is
+	// inert rather than firing a request that would be refused.
+	for i, row := range m.jobs.tree.rows {
+		if !protocol.Unresolved(row.attention, row.seen) {
+			m.jobs.tree.cursor = i
+			if _, cmd, _ := m.handleTreeKey(keyRune('!')); cmd != nil {
+				t.Errorf("! on %v should do nothing", row.attention)
+			}
+			return
+		}
+	}
+}

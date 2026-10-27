@@ -132,6 +132,7 @@ ru [action] [-nEf] [-m <msg>] [-L <label>] [-D <id,...>] [-W <id,...>]
 | `term ls` | List live interactive panes (`session  pane`) hosted by the daemon |
 | `term kill <session> <pane>` | Kill a persistent interactive pane |
 | `config …` | Show/edit settings with provenance (see [Configuration](#configuration)) |
+| `ack [session] [pane]` | Acknowledge a pane's alert without attaching: it stops counting as needing you, but keeps its state and note |
 | `agent hooks [kind]` | Print the hook snippet that makes an agent report itself (sessions started with `--agent` are already instrumented) |
 | `gc` | Delete orphaned job-output files from the log directory |
 | `upgrade` | Stop a stale daemon from an older binary — only if it's idle |
@@ -350,7 +351,8 @@ on the management screen for a key/command cheatsheet.
 | `sg` / `si` / `ss` / `st` | Sort by group / id / state / time; the same chord again (or `R`) reverses |
 | `/` | Filter by command/label/session (`Enter` apply, `Esc` cancel) |
 | `:` | Command line (see below) |
-| `?` | Show the help overlay |
+| `?` | Show the help overlay — a scrollable page (`j`/`k`, `^d`/`^u`, `gg`/`G`), closed with `Esc`, `q` or `?`. It opens on the keys that apply right now |
+| `!` | Acknowledge the agent under the cursor without attaching to it |
 | `V` | Toggle visual mode; `j`/`k` extend the selection |
 | `x` / `u` / `r` | Kill / make urgent / rerun the selected job(s) — the Space-selected set, the visual range, or the cursor row |
 | `d` | Remove the selected job(s); finished jobs delete immediately, others confirm `y`/`n` |
@@ -393,6 +395,10 @@ and handy for jumping around or reaching a session you just made:
 │  ⏎:open · e:edit · n:new · d:delete · esc │
 ╰───────────────────────────────────────────╯
 ```
+
+`Tab` / `Shift+Tab` always move between the box's fields, as do `↑` / `↓`. On
+the fields that offer a choice — **group** and **agent** — `←` / `→` pick from
+it, with the options listed in the box as you go.
 
 `e` (edit) and `n` (new) open a small modal to set a session's **name** and
 **group**; submitting renames/moves or creates it. While the group field is
@@ -701,16 +707,23 @@ Two things adjust it automatically, and both are facts rather than guesses:
 - A shell prompt clears a stale `working` — whatever was running has exited.
 - Attaching to a pane acknowledges its alert. What that means depends on the
   state, because **acknowledging is not fixing**:
-  - `waiting` is *resolved* by attaching. It was blocked on you and now you are
-    there, so it clears to `idle`.
-  - `error` is only *acknowledged*. The failure is still a failure, so the state
-    and its note stay on the row — it just stops counting toward
-    `N sessions need you` and stops sorting to the top. Only `ru mark done`
-    (or a fresh mark) clears it. Otherwise glancing at a failure would make the
-    dashboard look healthier without anything having been fixed.
+  Acknowledging is never resolving: the state and the note stay on the row, and
+  the pane only stops counting toward `N sessions need you` and stops sorting to
+  the top. Only a fresh report clears it — which, with the agent's hooks wired,
+  happens the moment you actually answer.
+
+  This applies to `waiting` as much as to `error`. Attaching used to clear a
+  waiting pane outright, on the reasoning that it was blocked on you and now you
+  are there. That was wrong in the case that matters: read the question, realize
+  you need to go and find the answer, leave — and the row reported `idle` with
+  the question discarded while the agent sat there still blocked.
 
 A new report always resets the acknowledgment, so an agent that errors *again*
 after you looked at the last failure gets your attention back.
+
+You can also acknowledge **without attaching**: `!` on a sidebar row, or
+`ru ack` from a script. Attaching is a heavy way to say "noted" — it takes over
+your screen — and on a waiting agent it is easy to mistake for having answered.
 
 ### The alarm
 

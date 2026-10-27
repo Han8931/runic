@@ -165,6 +165,14 @@ func (m model) handleCtrlB(msg tea.KeyMsg) (model, bool, tea.Cmd) {
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			nm, cmd := m.selectSessionTab(int(key[0] - '0'))
 			return nm, true, cmd
+		case "?":
+			// Help is only rendered over the management screen, so bring that up
+			// with the overlay already open. Without this, finding the key list
+			// from inside a session meant knowing a different chord first.
+			nm, mouseCmd := m.openJobsView()
+			nm.jobs.helping = true
+			nm.jobs.help = helpView{}
+			return nm, true, tea.Batch(clearScreenCmd(), sampleHWCmd(nm.hwMon), mouseCmd)
 		case "j":
 			// Ctrl+B j opens the job-management view. Pane-down is on Ctrl+B ↓.
 			nm, mouseCmd := m.openJobsView()

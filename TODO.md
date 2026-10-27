@@ -197,6 +197,47 @@ state on a pane — see Priority 5, which P6 depends on.
       there is an agent, so there is nothing to tell apart, and a glyph beats a
       marker that would be identical on every row.
 
+### Priority 4f — review follow-ups: trust and discoverability — DONE
+Acting on an external review. All four of its P1s were real; two of its
+*recommendations* were already in place (seen is tracked separately, and an
+explicit acknowledgement exists on the wire), so what was missing was the
+behaviour change and a key bound to it.
+
+- [x] **Attaching no longer resolves a waiting pane.** It acknowledges it, like
+      an error: state and note survive, only the accounting changes. The case
+      that matters is reading the question, realizing you need to go and find
+      the answer, and leaving — which used to report `idle` with the question
+      discarded while the agent sat there still blocked. That is the same
+      failure the error path was fixed for in 4c; `seen()` is now one rule
+      instead of two. A fresh report is the only thing that clears a state, and
+      with hooks wired that lands the moment you answer.
+- [x] `!` in the sidebar and `ru ack [session] [pane]` acknowledge without
+      attaching. Attaching is a heavy way to say "noted" — it takes your screen
+      — and on a waiting agent it is easy to mistake for an answer.
+- [x] **The status bar sheds by priority instead of by side.** It used to drop
+      its whole right half the instant it did not fit, which at 80 columns took
+      every navigation key with it — and, since the hint bar became clickable,
+      every click target too. `fitBar` ranks segments: the mode chip, a live
+      alarm and the keys that get you *out* are protected; branch, counts and
+      secondary hints are shed outermost-first. `^B ?` was added so "help" is a
+      real protected slot rather than an advertised chord that did not exist.
+- [x] **The help overlay is a page, not a flash card.** It is ~50 rows and was
+      handed to `centerBox`, which silently emitted only the first `bodyH` of
+      them — past the middle was unreachable at 80x24, with nothing on screen
+      admitting it. Now a viewport with `j`/`k`, `^d`/`^u`, `gg`/`G`, the wheel,
+      a position readout, and dismissal only on `esc`/`q`/`?` so reaching for a
+      scroll key cannot throw the page away. It opens on a contextual "Right
+      now" section built from the same hints the footer renders, so it cannot
+      drift from the live keymap.
+- [x] **Tab means one thing in forms: next field.** It used to cycle *values* on
+      group and agent while moving fields elsewhere, with Shift+Tab disagreeing
+      about which. Picking a value moved to `←`/`→`, whose choices are already
+      listed on screen.
+- [ ] Not taken yet (P2 in the review): wrapping an agent's note instead of
+      truncating it to one detail line, leading the detail panel with state and
+      request ahead of metadata, and collapsing the sidebar against the table's
+      minimum useful width rather than a fixed 48-column floor.
+
 ### Priority 5 — the agent as a first-class object
 Partly done. A session now *has* an agent — a kind it was created to host, which
 the daemon starts in its first pane — so "which agent is this?" and "is this an

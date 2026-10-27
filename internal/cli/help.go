@@ -49,6 +49,9 @@ Sessions:
   session move <s> <g> Move a session to a group
 
 Agents:
+  ack [s] [p]          Acknowledge a pane's alert without attaching to it: it
+                       stops counting as needing you but keeps its state and
+                       note. Defaults to the pane it is run from.
   agent hooks [kind]   Print the hook snippet that makes an agent report itself
                        (Claude Code). Sessions started with --agent are already
                        instrumented and need no file.

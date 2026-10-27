@@ -106,8 +106,9 @@ type jobsView struct {
 	scopeAll   bool
 	filtering  bool
 	filter     string
-	commanding bool // the ':' command line is open
-	helping    bool // the help overlay is open
+	commanding bool     // the ':' command line is open
+	helping    bool     // the help overlay is open
+	help       helpView // its scroll position
 
 	visual bool // visual (multi-select) mode active
 	anchor int  // row index where the visual selection started
@@ -437,6 +438,10 @@ const (
 	treeOuterW  = treePaneWidth + 2    // Sessions pane incl. its border
 	detailPaneH = jobsDetailHeight + 2 // Details pane under the table, incl. border
 )
+
+// helpView is the help overlay's scroll position. The overlay is a page, not a
+// flash card: it is longer than any terminal and has to be readable to the end.
+type helpView struct{ offset int }
 
 // jobsOverlay reports whether a modal owns the pane row.
 func (m model) jobsOverlay() bool {

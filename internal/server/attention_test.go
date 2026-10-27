@@ -148,10 +148,14 @@ func TestPromptMarkerKeepsNeedsYouStates(t *testing.T) {
 	}
 }
 
-// Attaching resolves a *waiting* pane: it was blocked on you and now you are
-// here. A pane still working keeps its state (watching it is not finishing it).
-// An error is a separate case — see TestSeenKeepsErrorButStopsNagging.
-func TestSeenClearsOnlyNeedsYou(t *testing.T) {
+// Attaching to a waiting pane acknowledges the alert; it does not answer the
+// question. The state and the note have to survive, because the case that
+// matters is: read the question, realize you need to go and find out, leave.
+// Resolving on attach reported idle with the question discarded while the agent
+// was still sitting there blocked — the same failure the error case was fixed
+// for. Only a fresh report clears it, which the agent's hooks do the moment you
+// actually answer.
+func TestSeenAcknowledgesWaitingWithoutAnsweringIt(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	m := NewTerminalManager()
 	term, err := m.GetOrCreate("s", "main", 80, 24)
@@ -160,16 +164,44 @@ func TestSeenClearsOnlyNeedsYou(t *testing.T) {
 	}
 	defer m.KillAll()
 
-	m.Mark("s", "main", protocol.AttentionWaiting, "answer me")
+	m.Mark("s", "main", protocol.AttentionWaiting, "which schema?")
 	term.fire(term.seen())
-	if got, note, _, _ := term.Attention(); got != protocol.AttentionIdle || note != "" {
-		t.Fatalf("attention = %v/%q after attach, want idle and no note", got, note)
+
+	a, note, _, seen := term.Attention()
+	if a != protocol.AttentionWaiting {
+		t.Errorf("attention = %v after attach, want waiting preserved", a)
 	}
+	if note != "which schema?" {
+		t.Errorf("note = %q after attach, want the question kept", note)
+	}
+	if !seen {
+		t.Error("attaching should mark the alert seen")
+	}
+	if protocol.Unresolved(a, seen) {
+		t.Error("an acknowledged pane should stop counting as needing you")
+	}
+
+	// Answering is what resolves it, and that arrives as a report.
+	m.Mark("s", "main", protocol.AttentionWorking, "")
+	if got, _, _, seen := term.Attention(); got != protocol.AttentionWorking || seen {
+		t.Errorf("after answering: %v seen=%v, want working and unacknowledged", got, seen)
+	}
+}
+
+// A pane still working keeps that state: watching it is not finishing it.
+func TestSeenLeavesWorkingAlone(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	m := NewTerminalManager()
+	term, err := m.GetOrCreate("s", "main", 80, 24)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	defer m.KillAll()
 
 	m.Mark("s", "main", protocol.AttentionWorking, "busy")
 	term.fire(term.seen())
-	if got, _, _, _ := term.Attention(); got != protocol.AttentionWorking {
-		t.Fatalf("attention = %v after attach, want working preserved", got)
+	if got, note, _, seen := term.Attention(); got != protocol.AttentionWorking || note != "busy" || seen {
+		t.Fatalf("attention = %v/%q seen=%v, want working untouched", got, note, seen)
 	}
 }
 

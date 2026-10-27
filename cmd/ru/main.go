@@ -347,6 +347,12 @@ func dispatch(cmd *cli.Command) error {
 		return client.GroupRename(cmd.Session, cmd.SessionArg)
 	case cli.ActionGroupDelete:
 		return client.GroupDelete(cmd.Session)
+	case cli.ActionAck:
+		session, pane, err := client.MarkTarget(cmd.Session, cmd.Pane)
+		if err != nil {
+			return err
+		}
+		return client.Ack(session, pane)
 	case cli.ActionGC:
 		return doGC()
 	case cli.ActionTermList:

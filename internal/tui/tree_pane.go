@@ -262,6 +262,14 @@ func (m model) handleTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	case "A":
 		// NerdTree-style zoom: expand the pane to fill the whole box.
 		t.zoom = !t.zoom
+	case "!":
+		// Acknowledge without attaching. Attaching is a heavy way to say
+		// "noted" — it takes over the screen — and on a waiting agent it is
+		// easy to mistake for having answered.
+		if r, ok := t.current(); ok && protocol.Unresolved(r.attention, r.seen) {
+			return m, ackAgent(r.session, r.pane), true
+		}
+		return m, nil, true
 	case "m":
 		// NerdTree-style action menu for the node under the cursor.
 		return m.openTreeMenu()

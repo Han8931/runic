@@ -21,62 +21,74 @@ func (m model) renderFooter() string {
 // is exactly why this is computed in one place rather than guessed at.
 func (m model) footerSpans() (string, []hintSpan) {
 	val := func(s string) string { return statusValueStyle.Render(" " + s + " ") }
-	left := m.modeStyle().Render(" "+m.modeName()+" ") + statusPair("SESSION", val(m.activeSession))
+
+	left := []barSegment{
+		{text: m.modeStyle().Render(" " + m.modeName() + " ")}, // protected: where am I
+		{text: statusPair("SESSION", val(m.activeSession)), drop: 3},
+	}
 	// The pane counter earns its place in a tiling view: it is the only way to
 	// tell "this session has one pane" from "the others are off-screen".
 	if n := m.paneCount(); n > 1 {
-		left += statusPair("PANE", val(fmt.Sprintf("%d/%d", m.focusedPaneIndex()+1, n)))
+		left = append(left, barSegment{
+			text: statusPair("PANE", val(fmt.Sprintf("%d/%d", m.focusedPaneIndex()+1, n))),
+			drop: 4,
+		})
 	}
 	switch {
 	case strings.HasPrefix(m.status, "error"):
-		left += " " + dangerChipStyle.Render(" ERR ") + val(m.status)
+		left = append(left, barSegment{text: " " + dangerChipStyle.Render(" ERR ") + val(m.status), drop: 1})
 	case m.status != "":
-		left += statusPair("MSG", val(m.status))
+		left = append(left, barSegment{text: statusPair("MSG", val(m.status)), drop: 2})
 	}
-	// An agent blocking in *another* session is the case this exists for: the
-	// tab strip marks it with a glyph, and this says what it actually wants.
+	// An agent blocking in *another* session is the case the alarm exists for,
+	// so it is never the thing that gets dropped.
 	if !m.alarm.alert.empty() {
-		left += " " + dangerChipStyle.Render(" ! "+shorten(m.alarm.alert.text(), 44)+" ")
+		left = append(left, barSegment{
+			text: " " + dangerChipStyle.Render(" ! "+shorten(m.alarm.alert.text(), 44)+" "),
+		})
 	}
 
-	right := ""
-	if m.gitBranch != "" {
-		right += statusPair("BRANCH", val("⊕ "+m.gitBranch))
-	}
-	right += statusPair("JOBS", val(fmt.Sprint(m.jobCount()))) +
-		statusPair("SLOTS", val(fmt.Sprint(m.maxSlots))) + " "
-	// The tab chord is only worth advertising when there is somewhere to go;
-	// the tabs on the top border are otherwise the only hint that it exists.
-	// Detach leads: it is the way out of a session, it was previously reachable
-	// only by knowing the chord, and it is the one thing you cannot discover by
-	// looking at the screen.
-	hints := []keyHint{{"^B d", "detach"}, {"^B s", "sessions"}, {"^B j", "jobs"}, {"^B |/-", "split"}}
+	// Getting out of a session, reaching the session list, and finding the help
+	// are protected. Everything else here is a readout.
+	out := []keyHint{{"^B d", "detach"}, {"^B j", "jobs"}, {"^B ?", "help"}}
+	secondary := []keyHint{{"^B s", "sessions"}, {"^B |/-", "split"}}
 	if m.jobs.tree.focus {
-		hints = []keyHint{{"enter", "open"}, {"n", "new"}, {"e", "edit/move"}, {"d", "delete"}, {"tab", "agents"}, {"esc", "terminal"}}
+		out = []keyHint{{"enter", "open"}, {"esc", "terminal"}}
+		secondary = []keyHint{{"n", "new"}, {"e", "edit/move"}, {"d", "delete"}, {"tab", "agents"}}
 	}
 	// Gated on the same list the chord walks (sessionNames, the daemon's whole
 	// catalog) — not just the sessions already open, or the hint would hide
 	// while the tabs on the border plainly offer somewhere to go.
 	if len(m.sessionNames()) > 1 {
-		hints = append([]keyHint{{"^B n/p", "session"}}, hints...)
+		secondary = append([]keyHint{{"^B n/p", "session"}}, secondary...)
 	}
-	keys, spans := statusKeys(hints)
-	right += keys
-	line := renderStatusBar(m.width, left, right)
-	// renderStatusBar drops the right side wholesale when it will not fit, which
-	// takes the targets with it: reporting spans for caps that were not drawn
-	// would make a click land on whatever is actually there.
-	rightW := lipgloss.Width(right)
-	if lipgloss.Width(left)+rightW > m.width {
-		return line, nil
+	outKeys, outSpans := statusKeys(out)
+	secKeys, secSpans := statusKeys(secondary)
+
+	right := []barSegment{
+		{text: statusPair("JOBS", val(fmt.Sprint(m.jobCount()))), drop: 6},
+		{text: statusPair("SLOTS", val(fmt.Sprint(m.maxSlots))), drop: 7},
+		{text: " " + secKeys, drop: 4, keys: shiftSpans(secSpans, 1)},
+		{text: " " + outKeys, keys: shiftSpans(outSpans, 1)},
 	}
-	// The caps sit at the far right, after `keys` own offset within `right`.
-	base := m.width - rightW + (rightW - lipgloss.Width(keys))
-	for i := range spans {
-		spans[i].start += base
-		spans[i].end += base
+	if m.gitBranch != "" {
+		// Which branch an agent is editing is worth more than a slot count or a
+		// job tally, both of which the management screen also shows.
+		right = append([]barSegment{{text: statusPair("BRANCH", val("⊕ "+m.gitBranch)), drop: 5}}, right...)
 	}
-	return line, spans
+	return fitBar(m.width, left, right)
+}
+
+// shiftSpans offsets hint spans by n columns, for a segment whose text is
+// preceded by padding.
+func shiftSpans(spans []hintSpan, n int) []hintSpan {
+	out := make([]hintSpan, len(spans))
+	for i, sp := range spans {
+		sp.start += n
+		sp.end += n
+		out[i] = sp
+	}
+	return out
 }
 
 // statusKeys renders key caps for the status bar's right edge, with the columns
@@ -103,6 +115,99 @@ func statusKeys(hints []keyHint) (string, []hintSpan) {
 // statusPair renders a gorae-style LABEL value pair for a status bar.
 func statusPair(label, value string) string {
 	return statusLabelStyle.Render(" "+label) + value
+}
+
+// barSegment is one piece of a status bar together with how readily it may be
+// given up when the terminal is too narrow for all of it.
+//
+// drop 0 is protected and never dropped: the mode chip, a live alarm, and the
+// keys that get you *out* of where you are. Everything else is ranked by how
+// much is lost by its absence — a branch name and a slot count are nice, but
+// losing the only on-screen evidence that detach exists is not a trade worth
+// making, and that is exactly what dropping the whole right side used to do.
+type barSegment struct {
+	text string
+	drop int
+	// keys are hint spans within this segment, offset from its own start, so a
+	// segment that survives the fit can still be clicked.
+	keys []hintSpan
+}
+
+// fitBar lays left and right out on one full-width bar, shedding the most
+// expendable segments until it fits rather than discarding a whole side.
+func fitBar(width int, left, right []barSegment) (string, []hintSpan) {
+	if width <= 0 {
+		return "", nil
+	}
+	keep := func(segs []barSegment) []barSegment {
+		out := make([]barSegment, 0, len(segs))
+		for _, s := range segs {
+			if s.text != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	left, right = keep(left), keep(right)
+
+	total := func() int {
+		n := 0
+		for _, s := range left {
+			n += lipgloss.Width(s.text)
+		}
+		for _, s := range right {
+			n += lipgloss.Width(s.text)
+		}
+		return n
+	}
+	// Shed the highest-priority-to-drop segment until it fits. Ties go to the
+	// later segment, so a bar sheds from its outer edge inward.
+	for total() > width {
+		worst, from, at := 0, (*[]barSegment)(nil), -1
+		for i, s := range right {
+			if s.drop >= worst && s.drop > 0 {
+				worst, from, at = s.drop, &right, i
+			}
+		}
+		for i, s := range left {
+			if s.drop >= worst && s.drop > 0 {
+				worst, from, at = s.drop, &left, i
+			}
+		}
+		if from == nil {
+			break // only protected segments remain; truncation below handles it
+		}
+		*from = append((*from)[:at], (*from)[at+1:]...)
+	}
+
+	var lb, rb strings.Builder
+	for _, s := range left {
+		lb.WriteString(s.text)
+	}
+	var spans []hintSpan
+	offset := 0
+	for _, s := range right {
+		rb.WriteString(s.text)
+		for _, sp := range s.keys {
+			sp.start += offset
+			sp.end += offset
+			spans = append(spans, sp)
+		}
+		offset += lipgloss.Width(s.text)
+	}
+	l, r := lb.String(), rb.String()
+	lw, rw := lipgloss.Width(l), lipgloss.Width(r)
+	if lw+rw > width {
+		// Nothing left to shed: keep the left edge, which holds the mode and the
+		// message, and let the right go under the truncation.
+		return fitToWidth(l+r, width), nil
+	}
+	base := width - rw
+	for i := range spans {
+		spans[i].start += base
+		spans[i].end += base
+	}
+	return fitToWidth(l+statusBarStyle.Render(strings.Repeat(" ", width-lw-rw))+r, width), spans
 }
 
 // renderStatusBar lays left and right out on one full-width bar. When both

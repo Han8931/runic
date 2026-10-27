@@ -740,3 +740,33 @@ func TestParseSessionCreateRejectsUnknownOption(t *testing.T) {
 		t.Fatal("expected an error when --branch has no value")
 	}
 }
+
+// `ru ack` acknowledges a pane without attaching. With no arguments it means
+// "the pane I am in", like `ru mark`.
+func TestParseAck(t *testing.T) {
+	cases := []struct {
+		args    []string
+		session string
+		pane    string
+	}{
+		{args: []string{"ack"}},
+		{args: []string{"ack", "agent-1"}, session: "agent-1"},
+		{args: []string{"ack", "agent-1", "p2"}, session: "agent-1", pane: "p2"},
+		{args: []string{"ack", "--session", "agent-1", "--pane", "p2"}, session: "agent-1", pane: "p2"},
+	}
+	for _, c := range cases {
+		cmd, err := Parse(c.args)
+		if err != nil {
+			t.Fatalf("Parse(%v): %v", c.args, err)
+		}
+		if cmd.Action != ActionAck {
+			t.Errorf("Parse(%v) action = %v, want ActionAck", c.args, cmd.Action)
+		}
+		if cmd.Session != c.session || cmd.Pane != c.pane {
+			t.Errorf("Parse(%v) = %q/%q, want %q/%q", c.args, cmd.Session, cmd.Pane, c.session, c.pane)
+		}
+	}
+	if _, err := Parse([]string{"ack", "a", "b", "c"}); err == nil {
+		t.Error("a third positional argument should be refused")
+	}
+}

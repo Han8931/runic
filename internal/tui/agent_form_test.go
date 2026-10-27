@@ -30,9 +30,9 @@ func agentFieldIndex(t *testing.T, m model) int {
 	return -1
 }
 
-// Tab cycles the configured kinds, with "none" a real stop in the rotation —
+// ←/→ pick from the configured kinds, with "none" a real stop in the rotation —
 // "actually, a plain session" is a normal correction to make.
-func TestAgentFieldCyclesKinds(t *testing.T) {
+func TestAgentFieldPicksKinds(t *testing.T) {
 	m := agentFormModel()
 	m.jobs.form.setFocus(agentFieldIndex(t, m))
 
@@ -40,35 +40,68 @@ func TestAgentFieldCyclesKinds(t *testing.T) {
 		got, _ := m.handleSessionFormKey(key)
 		return got.(model)
 	}
-	tab := tea.KeyMsg{Type: tea.KeyTab}
-	shiftTab := tea.KeyMsg{Type: tea.KeyShiftTab}
+	next := tea.KeyMsg{Type: tea.KeyRight}
+	prev := tea.KeyMsg{Type: tea.KeyLeft}
 
-	m = press(m, tab)
+	m = press(m, next)
 	if got := m.jobs.form.agentInput.Value(); got != "claude" {
-		t.Errorf("first tab = %q, want claude", got)
+		t.Errorf("first → = %q, want claude", got)
 	}
-	m = press(m, tab)
-	m = press(m, tab)
+	m = press(m, next)
+	m = press(m, next)
 	if got := m.jobs.form.agentInput.Value(); got != "gemini" {
-		t.Errorf("third tab = %q, want gemini", got)
+		t.Errorf("third → = %q, want gemini", got)
 	}
 	// Wrapping lands back on none rather than sticking at the end.
-	m = press(m, tab)
+	m = press(m, next)
 	if got := m.jobs.form.agentInput.Value(); got != "" {
-		t.Errorf("after the last kind, tab = %q, want none", got)
+		t.Errorf("after the last kind, → = %q, want none", got)
 	}
-	// Shift+tab backs through the list instead of leaving the field.
-	m = press(m, shiftTab)
+	// ← backs through the list.
+	m = press(m, prev)
 	if got := m.jobs.form.agentInput.Value(); got != "gemini" {
-		t.Errorf("shift+tab = %q, want gemini", got)
+		t.Errorf("← = %q, want gemini", got)
 	}
 	if !(&m.jobs.form).agentFocused() {
-		t.Error("cycling kinds must not move focus off the agent field")
+		t.Error("picking a kind must not move focus off the agent field")
 	}
 }
 
-// ↑/↓ still move between fields while the agent field has focus — only tab is
-// overloaded, the same compromise the group field makes.
+// Tab means one thing everywhere: next field. It used to cycle *values* on the
+// group and agent fields and move fields on the others, with Shift+Tab
+// disagreeing about which — so the key everybody presses for "next field" did
+// two different things depending on where the cursor was.
+func TestTabAlwaysMovesFields(t *testing.T) {
+	m := agentFormModel()
+	fields := (&m.jobs.form).fields()
+	if len(fields) < 3 {
+		t.Fatalf("expected a multi-field create form, got %v", fields)
+	}
+	for i := range fields {
+		m.jobs.form.setFocus(i)
+		before := (&m.jobs.form).focusedField()
+		got, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyTab})
+		after := got.(model)
+		if now := (&after.jobs.form).focusedField(); now == before {
+			t.Errorf("tab on %q did not move to the next field", before)
+		}
+		// And no field's value is edited by moving off it.
+		gotPrev, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+		prev := gotPrev.(model)
+		if now := (&prev.jobs.form).focusedField(); now == before {
+			t.Errorf("shift+tab on %q did not move to the previous field", before)
+		}
+	}
+	// Tab must not have touched the choice fields' values.
+	m.jobs.form.setFocus(agentFieldIndex(t, m))
+	got, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyTab})
+	if v := got.(model).jobs.form.agentInput.Value(); v != "" {
+		t.Errorf("tab changed the agent value to %q", v)
+	}
+}
+
+// ↑/↓ move between fields from the agent field too — the picker keys are ←/→
+// precisely so that every field-moving key keeps working everywhere.
 func TestAgentFieldArrowsStillSwitchFields(t *testing.T) {
 	m := agentFormModel()
 	idx := agentFieldIndex(t, m)
@@ -92,7 +125,7 @@ func TestAgentChoicePrefillsBranch(t *testing.T) {
 	m.jobs.form.nameInput.SetValue("agent-1")
 	m.jobs.form.setFocus(agentFieldIndex(t, m))
 
-	got, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyTab})
+	got, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyRight})
 	m = got.(model)
 	if b := m.jobs.form.branchInput.Value(); b != "agent-1" {
 		t.Errorf("branch = %q, want it prefilled with the session name", b)
@@ -100,7 +133,7 @@ func TestAgentChoicePrefillsBranch(t *testing.T) {
 	// Setting the agent back to none clears it again, so declining an agent
 	// never leaves a stray branch behind.
 	for i := 0; i < len(m.agentKinds); i++ {
-		got, _ = m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyTab})
+		got, _ = m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyRight})
 		m = got.(model)
 	}
 	if a := m.jobs.form.agentInput.Value(); a != "" {
@@ -126,7 +159,7 @@ func TestTypedBranchSurvivesAgentChoice(t *testing.T) {
 	}
 	// ...then pick an agent.
 	m.jobs.form.setFocus(agentFieldIndex(t, m))
-	got, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyTab})
+	got, _ := m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyRight})
 	m = got.(model)
 
 	if b := m.jobs.form.branchInput.Value(); b != "fix/login" {
@@ -134,7 +167,7 @@ func TestTypedBranchSurvivesAgentChoice(t *testing.T) {
 	}
 	// And clearing the agent does not wipe it either.
 	for i := 0; i < len(m.agentKinds); i++ {
-		got, _ = m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyTab})
+		got, _ = m.handleSessionFormKey(tea.KeyMsg{Type: tea.KeyRight})
 		m = got.(model)
 	}
 	if b := m.jobs.form.branchInput.Value(); b != "fix/login" {
@@ -142,7 +175,7 @@ func TestTypedBranchSurvivesAgentChoice(t *testing.T) {
 	}
 }
 
-// With the agent field focused, the box lists the kinds, so tab-cycling is a
+// With the agent field focused, the box lists the kinds, so picking one is a
 // visible choice rather than a blind rotation.
 func TestAgentFieldListsKinds(t *testing.T) {
 	m := agentFormModel()

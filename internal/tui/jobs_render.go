@@ -504,6 +504,18 @@ func (m model) helpLines(bodyH, inner int) []string {
 	}
 	content := []string{
 		"",
+		// What applies *here* comes first. The full list is long enough that at
+		// 80x24 most of it is below the fold, so the top of the page has to be
+		// the part you most likely came looking for.
+		jobsDetailKeyStyle.Render("  Right now"),
+	}
+	for _, h := range m.jobsHints() {
+		if _, _, ok := hintPress(h.key); ok || strings.Contains(h.key, "/") {
+			content = append(content, row(h.key, h.label))
+		}
+	}
+	content = append(content,
+		"",
 		jobsDetailKeyStyle.Render("  Navigation"),
 		row("j / k", "move down / up"),
 		row("gg / G", "jump to top / bottom"),
@@ -548,15 +560,16 @@ func (m model) helpLines(bodyH, inner int) []string {
 		row("^B 1-9", "jump to the nth session tab"),
 		row("^B o", "cycle panes within the session"),
 		row("^B d", "detach back here (panes keep running)"),
+		row("^B ?", "this help"),
+		row("!", "acknowledge an agent without attaching"),
 		"",
 		jobsDetailKeyStyle.Render("  Reading the screen"),
 		row("STATE", "green runs, amber waits, red failed"),
 		row("nR nQ nF", "sidebar chip: running / queued / failed"),
 		row("● ◐ ×", "an agent waits / works / broke, with how long"),
-		"",
-		helpStyle.Render("  press any key to close"),
-	}
-	return centerBox(modalBox("Help", content, boxInner), bodyH, inner)
+		row("◆ violet", "an agent row; the hue says it is calm"),
+	)
+	return m.helpViewport(content, bodyH, boxInner, inner)
 }
 
 // renderHWBar is the hardware section on the right of the status bar: CPU and
@@ -1084,4 +1097,44 @@ func shorten(s string, n int) string {
 func (m model) jobsBordered(content string, inner int) string {
 	b := borderStyle.Render("│")
 	return b + fitToWidth(content, inner) + b
+}
+
+// helpViewport frames the help content as a scrollable page. The list is far
+// longer than a terminal row budget — at 80x24 well over half of it is below
+// the fold — and it used to be handed to centerBox, which silently emitted only
+// the first bodyH lines. Everything past "View & config" was unreachable, with
+// nothing on screen saying so.
+func (m model) helpViewport(content []string, bodyH, boxInner, inner int) []string {
+	// Two border rows, a title row, and the footer line this adds.
+	view := max(1, bodyH-4)
+	offset := m.jobs.help.offset
+	if maxOff := max(0, len(content)-view); offset > maxOff {
+		offset = maxOff
+	}
+	page := content[offset:min(len(content), offset+view)]
+
+	// Say where you are, so a clipped page is visibly clipped.
+	pos := "all"
+	switch {
+	case len(content) <= view:
+	case offset == 0:
+		pos = "top"
+	case offset+view >= len(content):
+		pos = "end"
+	default:
+		pos = fmt.Sprintf("%d%%", offset*100/max(1, len(content)-view))
+	}
+	foot := fmt.Sprintf("  j/k ^d/^u scroll · esc close   %s", pos)
+	if len(content) <= view {
+		foot = "  esc close"
+	}
+	page = append(append([]string{}, page...), "", helpStyle.Render(fitToWidth(foot, boxInner-2)))
+	return centerBox(modalBox("Help", page, boxInner), bodyH, inner)
+}
+
+// helpScroll moves the help page, clamped. The content length is not known here
+// (it is built during render), so the floor is 0 and the ceiling is applied by
+// helpViewport against the real list.
+func (m *model) helpScroll(delta int) {
+	m.jobs.help.offset = max(0, m.jobs.help.offset+delta)
 }

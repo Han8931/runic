@@ -36,8 +36,28 @@ func (m model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.jobs.helping {
-		// Any key dismisses the help overlay.
-		m.jobs.helping = false
+		// The overlay is a page you read, not a flash card: it is longer than
+		// any terminal, so it has to scroll, and a stray keystroke must not
+		// throw it away mid-read. Esc and q close it, as everywhere else.
+		switch msg.String() {
+		case "esc", "q", "?":
+			m.jobs.helping = false
+			m.jobs.help = helpView{}
+		case "j", "down":
+			(&m).helpScroll(1)
+		case "k", "up":
+			(&m).helpScroll(-1)
+		case "ctrl+d", "pgdown", " ":
+			(&m).helpScroll(max(1, m.jobsBodyHeight()/2))
+		case "ctrl+u", "pgup":
+			(&m).helpScroll(-max(1, m.jobsBodyHeight()/2))
+		case "g", "home":
+			m.jobs.help.offset = 0
+		case "G", "end":
+			// Clamped down to the real end by helpViewport, which is the only
+			// place the content length is known.
+			m.jobs.help.offset = 1 << 20
+		}
 		return m, nil
 	}
 
@@ -353,9 +373,17 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
+		if m.jobs.helping {
+			(&m).helpScroll(-1)
+			return m, nil
+		}
 		(&m).jobsMove(-1)
 		return m, nil
 	case tea.MouseButtonWheelDown:
+		if m.jobs.helping {
+			(&m).helpScroll(1)
+			return m, nil
+		}
 		(&m).jobsMove(1)
 		return m, nil
 	case tea.MouseButtonLeft:

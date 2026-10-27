@@ -65,6 +65,24 @@ func createSessionInGroup(name, group, branch, agent string) tea.Cmd {
 // uncommitted work there. That refusal comes back as offerDiscard, which puts
 // the TUI into a second confirmation rather than silently losing the work or
 // silently keeping a directory nobody owns any more.
+// ackAgent acknowledges a pane's alert without attaching to it: it stops
+// counting as needing you and stops floating to the top, while the state and
+// the note stay on the row. Triaging a dashboard should not require visiting
+// every pane on it, and attaching is a destructive way to say "noted" — it
+// steals your screen and, for a waiting agent, is easy to mistake for an answer.
+func ackAgent(session, pane string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.Ack(session, pane); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		where := session
+		if pane != "" {
+			where += " · " + pane
+		}
+		return actionDoneMsg{status: fmt.Sprintf("acknowledged %s — it still needs an answer", where)}
+	}
+}
+
 func deleteSession(name string) tea.Cmd {
 	return func() tea.Msg {
 		err := client.SessionDelete(name)

@@ -148,6 +148,40 @@ func parseMarkSubcommand(cmd *Command, args []string) (*Command, error) {
 	return cmd, nil
 }
 
+// parseAckSubcommand handles `ru ack [session] [pane]`: acknowledge a pane's
+// alert without attaching to it. With no arguments it acknowledges the pane it
+// is run from, like `ru mark`.
+func parseAckSubcommand(cmd *Command, args []string) (*Command, error) {
+	cmd.Action = ActionAck
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--session", "-g":
+			i++
+			if i >= len(args) {
+				return nil, fmt.Errorf("--session requires a name")
+			}
+			cmd.Session = args[i]
+		case "--pane":
+			i++
+			if i >= len(args) {
+				return nil, fmt.Errorf("--pane requires a name")
+			}
+			cmd.Pane = args[i]
+		default:
+			// Positional, so `ru ack agent-1 p2` reads the way it looks.
+			switch {
+			case cmd.Session == "":
+				cmd.Session = args[i]
+			case cmd.Pane == "":
+				cmd.Pane = args[i]
+			default:
+				return nil, fmt.Errorf("unexpected argument %q (usage: ru ack [session] [pane])", args[i])
+			}
+		}
+	}
+	return cmd, nil
+}
+
 func parseGroupSubcommand(cmd *Command, args []string) (*Command, error) {
 	if len(args) == 0 {
 		cmd.Action = ActionGroupList

@@ -64,6 +64,7 @@ const (
 	ActionUpgrade
 	ActionMark
 	ActionAgentHooks
+	ActionAck
 )
 
 type Command struct {
@@ -154,6 +155,9 @@ func Parse(args []string) (*Command, error) {
 	}
 	if args[0] == "agent" {
 		return parseAgentSubcommand(cmd, args[1:])
+	}
+	if args[0] == "ack" {
+		return parseAckSubcommand(cmd, args[1:])
 	}
 	if args[0] == "gc" {
 		cmd.Action = ActionGC

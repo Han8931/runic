@@ -170,19 +170,24 @@ func (t *TerminalPTY) setAttention(a protocol.Attention, note string, now time.T
 	return &AttentionEvent{Session: session, Pane: t.pane, From: prev, To: a, Note: note}
 }
 
-// seen acknowledges a pane's alert once a client actually attaches to it, so
-// the inbox empties as you work through it. What that means depends on the
-// state, because acknowledging is not the same as fixing:
+// seen acknowledges a pane's alert — on attaching, or on an explicit `ru ack` —
+// so the inbox empties as you work through it. Acknowledging is never the same
+// as resolving: the state and the note survive, and the pane only stops
+// counting as needing you and floating to the top.
 //
-//   - waiting is *resolved* by attaching. The pane was blocked on you and now
-//     you are here, so it clears to idle.
-//   - error is only *acknowledged*. The failure is still a failure and the note
-//     explaining it is the most useful thing on screen, so both survive; the
-//     pane simply stops counting as needing you until something marks it done.
+// This used to resolve a *waiting* pane outright, on the reasoning that it was
+// blocked on you and now you are here. That was wrong in the one case that
+// matters: look at the question, decide you need to go and find out the answer,
+// leave — and the pane reports idle with the question thrown away, while the
+// agent is still sitting there blocked. It is the same failure the error case
+// was fixed for, which is that glancing at something must not make the
+// dashboard look healthier than it is.
 //
-// Clearing an error here would make the dashboard look healthier merely because
-// you had glanced at it. A pane still claiming to be working keeps that state —
-// attaching to watch it does not make it idle.
+// Nothing here clears a state; only a fresh report does. With the agent's hooks
+// wired that happens the moment you answer (UserPromptSubmit → working), so the
+// row corrects itself as soon as there is something true to say. A pane still
+// claiming to be working keeps that too — attaching to watch it does not make
+// it idle.
 func (t *TerminalPTY) seen() *AttentionEvent {
 	t.mu.Lock()
 	a := t.attention
@@ -190,17 +195,13 @@ func (t *TerminalPTY) seen() *AttentionEvent {
 		t.mu.Unlock()
 		return nil
 	}
-	if a == protocol.AttentionError {
-		t.attnSeen = true
-		session, note := t.session, t.note
-		t.mu.Unlock()
-		// Report the acknowledgment as a transition so `on_attention` can act
-		// on it, naming the same state on both sides: nothing about the pane
-		// changed except that you now know.
-		return &AttentionEvent{Session: session, Pane: t.pane, From: a, To: a, Note: note}
-	}
+	t.attnSeen = true
+	session, note := t.session, t.note
 	t.mu.Unlock()
-	return t.setAttention(protocol.AttentionIdle, "", time.Now())
+	// Report the acknowledgment as a transition so `on_attention` can act on it,
+	// naming the same state on both sides: nothing about the pane changed except
+	// that you now know.
+	return &AttentionEvent{Session: session, Pane: t.pane, From: a, To: a, Note: note}
 }
 
 // noteOutputLocked inspects a chunk of pane output for the shell's OSC 133

@@ -46,8 +46,8 @@ type sessionForm struct {
 	timeoutInput textinput.Model // job timeout duration; empty = none
 	// agentInput appears only when creating. A kind there ("claude") makes the
 	// session host that coding agent, started in its first pane; blank makes a
-	// plain session of shells. Tab cycles the configured kinds, the same way the
-	// group field cycles existing groups.
+	// plain session of shells. ←/→ pick from the configured kinds, the same way
+	// they pick an existing group.
 	agentInput textinput.Model
 	// branchInput appears only when creating. A branch name there makes the
 	// session an isolated git worktree on that branch; blank makes an ordinary
@@ -188,9 +188,21 @@ func (m model) handleSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.jobs.form = sessionForm{}
 		return m, nil
-	case "tab":
-		// On the group and agent fields, tab cycles through the known values so
-		// they are discoverable; ↑/↓ and shift+tab still switch fields.
+	// Tab and Shift+Tab always move between fields, everywhere, and so do ↑/↓.
+	// Tab used to *cycle values* on the group and agent fields while moving
+	// fields on the others — and Shift+Tab disagreed with Tab about which — so
+	// the one key everybody presses to mean "next field" did two different
+	// things depending on where the cursor happened to be.
+	case "tab", "down":
+		f.setFocus(f.focusField + 1)
+		return m, textinput.Blink
+	case "shift+tab", "up":
+		f.setFocus(f.focusField - 1)
+		return m, textinput.Blink
+	// ←/→ pick a value on the fields that have a choice list. They are the
+	// picker keys precisely because they do nothing else in a text field whose
+	// choices are already on screen.
+	case "right":
 		if f.groupFocused() {
 			if g, ok := nextGroup(m.groups, strings.TrimSpace(f.groupInput.Value()), 1); ok {
 				f.groupInput.SetValue(g)
@@ -202,23 +214,18 @@ func (m model) handleSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cycleFormAgent(1)
 			return m, nil
 		}
-		f.setFocus(f.focusField + 1)
-		return m, textinput.Blink
-	case "down":
-		f.setFocus(f.focusField + 1)
-		return m, textinput.Blink
-	case "shift+tab":
-		// Shift+tab backs through the agent kinds while that field is focused,
-		// so a four-item list is reachable in one step from either end.
+	case "left":
+		if f.groupFocused() {
+			if g, ok := nextGroup(m.groups, strings.TrimSpace(f.groupInput.Value()), -1); ok {
+				f.groupInput.SetValue(g)
+				f.groupInput.CursorEnd()
+			}
+			return m, nil
+		}
 		if f.agentFocused() {
 			m.cycleFormAgent(-1)
 			return m, nil
 		}
-		f.setFocus(f.focusField - 1)
-		return m, textinput.Blink
-	case "up":
-		f.setFocus(f.focusField - 1)
-		return m, textinput.Blink
 	case "enter":
 		return m.submitSessionForm()
 	}
@@ -541,9 +548,9 @@ func (m model) sessionFormLines(bodyH, inner int) []string {
 		content = append(content, "")
 		content = append(content, wrapHelpLines(hint, boxInner-2)...)
 	}
-	keys := "  tab: groups · ↑/↓: switch · ⏎: save · esc: cancel"
-	if f.agentFocused() {
-		keys = "  tab/shift+tab: agent · ↑/↓: switch · ⏎: save · esc: cancel"
+	keys := "  tab/↑/↓: next field · ⏎: save · esc: cancel"
+	if f.groupFocused() || f.agentFocused() {
+		keys = "  ←/→: pick · tab: next field · ⏎: save · esc: cancel"
 	}
 	content = append(content, "", helpStyle.Render(keys))
 	return centerBox(modalBox(title, content, boxInner), bodyH, inner)
