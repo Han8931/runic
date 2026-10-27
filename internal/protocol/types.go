@@ -145,8 +145,24 @@ func (a Attention) String() string {
 // NeedsYou reports whether a state is one a human has to act on. Only these
 // float to the top of the TUI tree, so a pane merely working away never
 // reshuffles the sidebar under your cursor.
+//
+// This is a property of the state alone. Whether a *pane* still needs you also
+// depends on whether its alert has been acknowledged — see Unresolved.
 func (a Attention) NeedsYou() bool {
 	return a == AttentionWaiting || a == AttentionError
+}
+
+// Unresolved reports whether a pane still wants your attention: a "needs you"
+// state that has not been acknowledged by attaching to it.
+//
+// The distinction exists because acknowledging is not fixing. Attaching to a
+// *waiting* pane does resolve it — it was blocked on you and now you are there,
+// so the daemon clears it outright. Attaching to an *errored* pane resolves
+// nothing: the failure is still a failure, and the note explaining it is the
+// most useful thing on the screen. So an error survives being seen, keeps its
+// note, and merely stops counting against you until something marks it done.
+func Unresolved(a Attention, seen bool) bool {
+	return a.NeedsYou() && !seen
 }
 
 // ParseAttention maps a `ru mark` argument to its state. "done" is accepted as
@@ -185,6 +201,23 @@ type SessionInfo struct {
 	// reported — "waiting" with no age reads as "just now", which is a lie once
 	// it has been an hour.
 	AttentionSince time.Time
+	// AttentionSeen marks an alert that has been acknowledged by attaching to
+	// the pane. Only an error survives acknowledgment (waiting is cleared
+	// outright), so this reads as "still broken, but you know about it": the
+	// state and note stay visible while the session stops counting as needing
+	// you. See protocol.Unresolved.
+	AttentionSeen bool
+	// Agent is the kind of coding agent the session was created to host
+	// ("claude", "codex", …), empty for an ordinary session. Unlike Attention
+	// — a mood a pane reports — this is a property of the session itself, known
+	// from the moment it is created, so an agent is listed before it has ever
+	// called `ru mark`.
+	Agent string
+	// AgentStarted reports that the session's agent has actually been launched
+	// at least once. With no live pane it is the difference between "this agent
+	// exited" and "you have not opened it yet" — two states that otherwise look
+	// identical, and only one of which is a problem.
+	AgentStarted bool
 	// Worktree is the git worktree directory the session's panes start in, when
 	// it owns one (empty otherwise), and Branch is what is checked out there.
 	Worktree string

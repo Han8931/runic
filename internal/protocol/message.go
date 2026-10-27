@@ -132,6 +132,12 @@ const (
 	// mid-list renumbers every later type and a daemon built from older code
 	// would misread the wire.
 	MsgMark
+	// MsgAck acknowledges a pane's alert without attaching to it, with the same
+	// meaning attaching has: a waiting pane is resolved outright, an errored one
+	// keeps its state and note but stops counting as needing you. It exists
+	// because triaging a dashboard should not require visiting every pane on it.
+	// Answered with MsgActionOK.
+	MsgAck
 )
 
 type Msg struct {
@@ -239,6 +245,12 @@ type PayloadSession struct {
 	Worktree bool
 	Repo     string
 	Branch   string
+	// Agent names the kind of coding agent the session hosts ("claude",
+	// "codex", …), empty for an ordinary session. The daemon resolves it
+	// against the `agents` config table and starts that command in the
+	// session's first pane, so attaching lands on a running agent. An unknown
+	// kind is an error rather than a silently plain session.
+	Agent string
 	// Discard permits a session delete to destroy uncommitted work in the
 	// session's worktree. Without it the daemon refuses the removal and keeps
 	// the directory, answering with a DirtyWorktreePrefix error.
@@ -345,6 +357,22 @@ type TerminalInfo struct {
 	// Since is when the pane entered its current attention state (zero if it
 	// has never reported one).
 	Since time.Time
+	// Seen marks an alert already acknowledged by attaching to this pane. Only
+	// an error survives acknowledgment; see protocol.Unresolved.
+	Seen bool
+	// LastOutput is when the pane last produced any output. An agent that claims
+	// to be working but has printed nothing for a long time is the case no
+	// self-report covers: it cannot report being wedged. Unlike guessing *what*
+	// output means, a timestamp on the byte stream is a plain fact.
+	LastOutput time.Time
+}
+
+// PayloadAck names the pane whose alert is being acknowledged. An empty Pane
+// acknowledges every live pane in the session, which is how you clear a session
+// you have just dealt with in one gesture.
+type PayloadAck struct {
+	Session string
+	Pane    string
 }
 
 // PayloadMark sets a pane's attention state. An empty Pane marks every live
