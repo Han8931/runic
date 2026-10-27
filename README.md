@@ -22,8 +22,11 @@ command to queue a job. The daemon starts automatically on first use.
   timeouts, and retries. Follow output live or inspect it later.
 - **Persistent sessions** — organize shells and jobs into named sessions and groups.
   Split panes, detach, and reconnect without stopping your work.
+- **Agent sessions** — pick an agent (`claude`, `codex`, …) when creating a session
+  and runic starts it in the session's first pane, on its own branch if you want one.
 - **Agent attention** — let agents report `working`, `waiting`, `done`, or `error`
-  with `ru mark`. Sessions needing attention rise to the top of their group.
+  with `ru mark`. Sessions needing attention rise to the top of their group, and an
+  agent that starts waiting on you rings the bell and names itself on the status bar.
 - **Worktree isolation** — give a session its own Git worktree and branch for
   independent changes in the same repository.
 - **Keyboard-driven interface** — manage jobs with Vim-style navigation, tmux-style
@@ -129,6 +132,7 @@ ru [action] [-nEf] [-m <msg>] [-L <label>] [-D <id,...>] [-W <id,...>]
 | `term ls` | List live interactive panes (`session  pane`) hosted by the daemon |
 | `term kill <session> <pane>` | Kill a persistent interactive pane |
 | `config …` | Show/edit settings with provenance (see [Configuration](#configuration)) |
+| `agent hooks [kind]` | Print the hook snippet that makes an agent report itself (sessions started with `--agent` are already instrumented) |
 | `gc` | Delete orphaned job-output files from the log directory |
 | `upgrade` | Stop a stale daemon from an older binary — only if it's idle |
 
@@ -160,6 +164,9 @@ ru session list
 # Create a session
 ru session create build
 
+# Create a session running a coding agent, isolated on its own branch
+ru session create agent-1 --agent claude --worktree
+
 # Submit a job to a session
 ru -g build make all
 
@@ -180,35 +187,125 @@ ru session delete ci
 ### Interactive TUI (`ru`)
 
 Run `ru` to open the management screen. It is laid out as bordered panes: a
-**Sessions** sidebar with a collapsible group → session → job tree on the left,
-the **Jobs** table across all sessions (group, session, state, timeout, and name
-columns), and a **Details** pane for the selected job beneath the table.
+**Sessions** sidebar on the left, the **Jobs** table across all sessions, and a
+**Details** pane for whatever the cursor is on beneath the table.
 
-The Jobs pane has a row of view tabs — **All**, **Running**, **Queued**,
-**Done**, and **Failed**. Press `Tab` / `Shift+Tab` (or `←` / `→` from the table)
-to roll through them, or click a tab. The active tab shows its job count, and
-**Failed** keeps its count visible from any view.
+Both panes carry view tabs, and `Tab` / `Shift+Tab` roll **the focused pane's**
+views — so one gesture always means "next view". Clicking a tab switches to it.
+
+The Sessions pane has two: **Spaces** and **Agents**.
+
+- **Spaces** is the collapsible group → session → agent/job tree. A group *is* a
+  space: a named workspace holding sessions. A session's agents are its
+  children, marked `◆` and named by kind, so an agent row can never be mistaken
+  for another session: an agent that needs you sits **above** the session's
+  jobs, and a quiet one sits below them, out of the way until it has something
+  to say.
+- **Agents** drops the hierarchy and lists every live pane that has reported a
+  state, most urgent first — errors, then panes waiting on you, then the ones
+  working, then the quiet ones. Within a state the one that has been there
+  longest sorts first. The tab carries a `2!` badge for panes needing you, so a
+  blocked agent is visible from the Spaces view.
+
+The Jobs pane has a **session tab row at the top**, with **All sessions** for
+the combined queue. Click a session or use `[` / `]` to select it; the job
+list and status counts are scoped to that session. Below it are **All**,
+**Running**, **Queued**, **Done**, and **Failed**
+(`←` / `→` also roll these, from the table only — in the sidebar they stay fold
+keys). The active tab shows its job count, and **Failed** keeps its count
+visible from any view.
 
 ```
 ╭────────────────────────╮ ╭──────────────────────────────────────────────────────────╮
-│ SESSIONS               │ │  All 3   Running  Queued  Done  Failed 1                 │
-│ ▾ DEFAULT           1R │ │   ID   GROUP ▲  SESSION  STATE    TIME  TIMEOUT  COMMAND │
-│   ▾ build           1R │ │▌   0   default  build    DONE     40s   -        make all│
-│     #0 compile         │ │    1   default  build    RUNNING  4s    30m      go test │
-│     #1 tests           │ │    2   default  build    EXIT 2   1s    -        go vet  │
-│     #2 lint            │ ╰──────────────────────────────────────────────────────────╯
+│  Spaces 2   Agents 2!  │ │  All 3   Running  Queued  Done  Failed 1                 │
+│ ▾ DEFAULT           1R │ │   ID   GROUP ▲  SESSION  STATE    TIME  WORK             │
+│ ● ▾ agent-1 ⊕      14m │ │▌   0   default  build    DONE     40s   make all         │
+│    ◆ claude        14m │ │    1   default  build    RUNNING  4s    tests  go test   │
+│   ▾ build           1R │ │    2   default  build    EXIT 2   1s    go vet ./...     │
+│     #0 compile         │ ╰──────────────────────────────────────────────────────────╯
 │                        │ ╭──────────────────────────────────────────────────────────╮
 │                        │ │  job details ────────────────────────────────────────────│
 │                        │ │  Command: make all                                       │
 │                        │ │  State: finished                                         │
 ╰────────────────────────╯ ╰──────────────────────────────────────────────────────────╯
- j/k  move   tab  views   ⏎  output   /  filter   :  command   space  select   s  sort
+ j/k  move   tab  agents   l/h  fold   ⏎  open   m  menu   e  edit   n  new   d  delete
  MANAGE  VIEW All  SESS 3  MSG Ready          CPU  4% ▂░░░░░░░  MEM 2.6G/15.0G ▂░░░░░░░
 ```
 
-The **TIMEOUT** column shows each job's wall-clock limit (`-` = none) and the
-**NAME** column its name — falling back to a dim copy of the command when the
-job is unnamed.
+`Tab` from there switches the sidebar to its agent list:
+
+```
+╭────────────────────────╮
+│  Spaces   Agents 4     │
+│▌× agent-2 · p2     50s │
+│ ● agent-1          14m │
+│ ◐ agent-2 · p1      3m │
+│   default              │
+╰────────────────────────╯
+```
+
+In **Spaces** the same agents appear under their own sessions instead, marked
+`◆` and named by kind — an agent needing you above the session's jobs, a quiet
+one below them:
+
+```
+╭────────────────────────╮
+│  Spaces 2   Agents 4!  │
+│ ▾ WORK          1R 1Q  │
+│ ● ▾ agent-1 ⊕     14m  │
+│    ◆ claude       14m  │   ← waiting: above the jobs
+│ ◐ ▾ agent-2 ⊕      1Q  │
+│    ◆ codex · p2    1m  │   ← errored: above the jobs
+│     #4 go vet          │
+│    ◆ codex · p1    3m  │   ← working: below them
+╰────────────────────────╯
+```
+
+An agent row is one pane, so two agents in one session stay two rows (the pane
+id is appended only when a session runs more than one). The right-hand column
+is how long it has been in that state; `Enter` attaches **directly to that
+agent's pane** — not just its session — which is also how you acknowledge a
+`waiting` pane. If the pane has closed since the last poll, you land on the
+session's first pane instead of nowhere. What the agent last *said* goes in the
+Details pane rather than the row — at 26 columns a clipped note reads as part
+of the name.
+
+Agent rows carry their own color — violet for "this is an agent, and it is
+fine", and the attention color when it wants something — so the hue says how
+urgent a row is while the marker says what kind of row it is. A session row
+never wears `◆`, and in the flat **Agents** tab the column goes back to the
+state glyph, since everything there is an agent and a glyph survives a terminal
+with no color.
+
+Note that the status bar's `N sessions need you` counts sessions while the
+**Agents** badge counts panes: a session with two blocked agents is one session
+and two agents.
+
+The table budgets its columns by usefulness rather than a fixed layout, so it
+stays readable in a narrow terminal:
+
+- **ID**, **STATE**, **TIME** and **WORK** always show. **WORK** is what the job
+  *is* — a named job leads with its name and trails the command in a dim tone
+  when both fit; an unnamed job shows the command once.
+- **SESSION** and **GROUP** are added when there is room for them, widest
+  terminal first, and dropped entirely rather than squeezed when there isn't.
+  Both are always in the Details pane.
+- **TIMEOUT** (wall-clock limit, `-` = none) appears only when some job in view
+  actually has one, since it is opt-in per job.
+
+At 80 columns you get `ID STATE TIME WORK`; around 100, SESSION joins; past
+about 110, GROUP does too.
+
+**The hint bar under the panes is clickable.** It already lists exactly the keys
+that apply right now, so each entry is a button: clicking one replays the key it
+advertises, through the same handler the keyboard uses. In a session that
+includes `^B d detach`, which was otherwise reachable only by knowing the
+chord. Entries naming two keys (`j/k`, `gg/G`) are not buttons — there is no
+single thing they could do.
+
+**Double-click opens** what a single click selects, in the sidebar and the job
+table alike. A single click still only moves the cursor, so a stray one cannot
+launch you into a session.
 
 Press `Enter` on a job to open its output in the pager. Empty sessions have a
 placeholder row; `Enter` opens their shells. Use the session picker (`S`) to
@@ -229,9 +326,10 @@ Only one interactive `ru` runs per daemon (like `tmux attach -d`): starting a
 second one takes over — the earlier instance exits with a "detached" notice
 instead of both mirroring the same shells and fighting over their sizes.
 Running `ru` from *inside* a runic pane doesn't take over; it surfaces the
-already-running TUI's management screen. Mouse clicks select rows on this screen (mouse is
-released inside panes so terminal text-selection still works). Press `?` any time
-for a key/command cheatsheet.
+already-running TUI's management screen. Mouse clicks select job rows and switch
+session tabs. In session view, click a sidebar session to attach directly.
+Use Shift-drag for native terminal text selection (where supported). Press `?`
+on the management screen for a key/command cheatsheet.
 
 **Management key bindings:**
 
@@ -242,13 +340,13 @@ for a key/command cheatsheet.
 | `Enter` | Open the cursor job's **output** (the pager); on an empty-session row, open that session's shell panes |
 | `o` | Open the output pager (scrollable; follows running jobs); press `i` there to overlay job info |
 | `S` | Open the session picker, including empty sessions |
-| `Tab` / `Shift+Tab` | Roll the job table through its views: All, Running, Queued, Done, Failed (`←` / `→` also work from the table) |
+| `Tab` / `Shift+Tab` | Roll the **focused** pane's views — the sidebar between Spaces and Agents, the table through All, Running, Queued, Done, Failed (`←` / `→` also roll the table's, from the table) |
 | `,n` | Toggle the session sidebar |
 | `Ctrl+w h` / `Ctrl+w l` | Focus the sidebar / the job table |
-| `h` / `l` | Collapse / toggle a node in the sidebar |
+| `h` / `l` | Collapse / toggle a node in the sidebar (Spaces view; the Agents list is flat) |
 | `m` / `A` | Open the sidebar action menu / toggle sidebar zoom |
 | `e` | Edit the cursor row in one box — a job row: job name, its session's name/group, and its timeout (empty = none); a session row: name + group |
-| `n` / `a` | Create a new session (opens the edit box; you land in it) |
+| `n` / `a` | Create a new session (opens the edit box; you land in it) — name, group, **agent**, and branch |
 | `sg` / `si` / `ss` / `st` | Sort by group / id / state / time; the same chord again (or `R`) reverses |
 | `/` | Filter by command/label/session (`Enter` apply, `Esc` cancel) |
 | `:` | Command line (see below) |
@@ -257,7 +355,7 @@ for a key/command cheatsheet.
 | `x` / `u` / `r` | Kill / make urgent / rerun the selected job(s) — the Space-selected set, the visual range, or the cursor row |
 | `d` | Remove the selected job(s); finished jobs delete immediately, others confirm `y`/`n` |
 | `D` / `C` | Delete all finished jobs (no confirm / confirm `y`/`n`) |
-| `q` | Quit (daemon-hosted shells keep running) |
+| `q` | Quit (daemon-hosted shells keep running) — from the sidebar too; the action menu still dismisses on `q` |
 | `Esc` | Back to the open session (quits if none is open) |
 
 #### Command line (`:`)
@@ -303,6 +401,43 @@ highlighted — `Tab` steps through them, or type a new name to create a group
 on save. On a **group header** row, `e` renames the group and `d` deletes it
 (empty groups only, with confirmation).
 
+#### Session tabs
+
+Every open session is a tab along the top border of the terminal view, so the
+sessions you have running are visible from inside any one of them:
+
+```
+╭ ● agent-1   ◐ agent-2   broken   default ───────────────────────────╮
+│ $                                                                   │
+```
+
+The active session is a filled chip; a session that has reported something wears
+its attention glyph and takes that state's color across the whole tab, so it
+reads at a glance. That is the point of the strip — an agent that starts **waiting**
+on you shows up on its tab while you are working in a different session, which
+previously meant detaching to the management screen to notice. A `working` agent
+shows `◐`; an error you have already acknowledged shows no glyph, since it is no
+longer news.
+
+Roll between tabs with `Ctrl+B n` / `Ctrl+B p`, or jump straight to one with
+`Ctrl+B 1`…`9`. Tabs are ordered by name, so a digit keeps pointing at the same
+session across a detach and reattach when the session catalog is unchanged.
+Tabs include every session, including ones not yet opened by this client.
+Long tab rows keep the selected session visible and indicate hidden neighbours
+with arrows; the same keyboard shortcuts reach those sessions.
+
+The **Spaces / Agents sidebar stays visible beside the terminal** at widths of
+60 columns or more. Spaces groups sessions without cluttering the sidebar with
+job rows; Agents lists reported panes by urgency. The selected session's state
+and note appear at the bottom, and `›` marks the active session.
+
+Click a session or agent to attach, or use `Ctrl+B s` to focus the sidebar:
+`j`/`k` select, `Enter` opens, `n` creates, `e` renames or moves to a group,
+`d` requests deletion, and `Tab` switches Spaces / Agents. `Esc` returns focus
+to the terminal. `Ctrl+B b` hides or restores the sidebar. On narrow terminals,
+`Ctrl+B s` opens the management sidebar. Mouse reporting is enabled for direct
+navigation; use Shift-drag for native selection where your terminal supports it.
+
 #### Panes (tmux-style splits)
 
 Inside a session the terminal can be split into multiple shells, tiled like tmux.
@@ -319,7 +454,11 @@ live until you close them (`Ctrl+B x`) or the daemon is stopped (`ru -K`).
 |--------|--------------|--------|
 | `Ctrl+B` `\|` / `%` | `vs` / `vsplit` | Split focused pane vertically (side by side) |
 | `Ctrl+B` `-` / `"` | `hs` / `hsplit` / `split` | Split focused pane horizontally (stacked) |
-| `Ctrl+B` `o` | `o` / `next` | Cycle focus to the next pane |
+| `Ctrl+B` `s` | — | Focus session sidebar |
+| `Ctrl+B` `b` | — | Hide / show session sidebar |
+| `Ctrl+B` `n` / `p` | — | Switch to the next / previous **session tab** |
+| `Ctrl+B` `1`…`9` | — | Switch to the *n*th session tab |
+| `Ctrl+B` `o` | `o` / `next` | Cycle focus to the next pane (*within* the session) |
 | `Ctrl+B` arrows / `h` `k` `l` | — | Move focus to the adjacent pane |
 | `Ctrl+W` then `h`/`j`/`k`/`l` / `w` | — | Move / cycle focus between panes |
 | `Ctrl+B` `x` / `Ctrl+W` `q` | `x` / `close` | Close the focused pane (last pane is kept) |
@@ -454,6 +593,7 @@ ru config path
 | `on_attention` | `RUNIC_ONATTENTION` | Command to run when a pane's attention state changes | — |
 | `save_list` | `RUNIC_SAVELIST` | Queue snapshot file (`none` disables) | `~/.local/state/runic/queue.json` |
 | `theme` | `RUNIC_THEME` | TUI palette: `auto` asks the terminal for its background (works inside tmux), or force `light` / `dark` | `auto` |
+| `agents` | `RUNIC_AGENTS` | Agent kinds the New-session box offers: `kind=command`, comma-separated, merged over the built-ins | `claude`, `codex`, `gemini`, `aider` |
 
 `RUNIC_SESSION` (environment only) sets the default session when `-g` is
 omitted; the TUI sets it inside session shells. Legacy `TS_*` names are still
@@ -465,6 +605,57 @@ Run coding agents in session panes to keep them running when you close the
 interface. Attention states show which agents need input; worktree sessions give
 each agent a separate checkout.
 
+### Start an agent with the session
+
+A session can name the agent it hosts, and runic starts it for you:
+
+```bash
+ru session create agent-1 --agent claude                 # start claude in it
+ru session create agent-2 --agent codex --worktree       # …on its own branch
+```
+
+In the TUI, the **New session** box (`n`) has an `agent` field. `Tab` cycles the
+configured kinds — `none`, `claude`, `codex`, … — and the choices are listed in
+the box as you go, so it is a visible choice rather than a blind rotation.
+Picking one prefills `branch` with the session name, since an agent usually
+wants its own worktree; clear it for an agent that should work in the main
+checkout, and a branch you typed yourself is never overwritten.
+
+```
+╭─ New session ──────────────────────────────╮
+│                                            │
+│▌ name     agent-1                          │
+│  group    work                             │
+│  agent    claude                           │
+│  branch   agent-1                          │
+│                                            │
+│   none  ▌claude▐  codex  gemini  aider     │
+│                                            │
+│  agent: started in the session's first     │
+│  pane, which keeps a shell underneath it   │
+│  tab/shift+tab: agent · ↑/↓: switch · ⏎    │
+╰────────────────────────────────────────────╯
+```
+
+The agent runs **in** the session's first pane rather than as it: the pane is a
+normal shell that launches the agent, so the prompt marker keeps working, the
+pane survives the agent exiting, and splitting the session gives you a shell
+next to the agent rather than a second copy of it. The pane reports `working`
+from the moment it starts, so a new agent session shows up in the **Agents** tab
+immediately instead of waiting for its first `ru mark`.
+
+Which command each kind runs is configurable — the built-in guesses assume the
+tool is on `PATH` under its own name:
+
+```bash
+# Override a built-in, add your own wrapper, or hide one you don't have
+ru config set agents 'claude=claude --permission-mode plan, mine=~/bin/my-agent, aider='
+```
+
+Entries merge over the built-ins (`claude`, `codex`, `gemini`, `aider`), so
+naming one tool does not hide the rest; `kind=` with no command removes a kind.
+An unknown kind fails the create rather than quietly giving you a plain shell.
+
 ### Report attention with `ru mark`
 
 Every pane carries a self-reported **attention state**, so the session list reads
@@ -474,12 +665,18 @@ like an inbox instead of a wall of identical shells:
 |-------|---------|-------------|
 | `waiting` | blocked on you | `●` amber, floats to the top, with how long |
 | `error` | stopped on a failure | `×` red, floats to the top, with how long |
+| `error` (seen) | still broken, acknowledged | `×` red, stays put, age shown quietly |
 | `working` | busy, needs nothing | `◐` green |
 | `done` / `idle` | nothing to do | plain |
 
 The sidebar shows how long a session has needed attention, such as `14m`.
 Select a session to see its branch, worktree, latest note, and job counts in
 the detail pane.
+
+The sidebar's **Agents** tab is the per-pane view of the same states: one row
+per live pane rather than one per session, sorted by urgency across every
+session, so two agents in one session are two rows. Use **Spaces** to see how
+work is organized and **Agents** to see who needs you.
 
 A process inside a pane reports its own state. Panes get `RUNIC_SESSION` and
 `RUNIC_PANE` in their environment, so no configuration is needed:
@@ -492,15 +689,70 @@ ru mark done
 ru mark idle --session agent-1 --pane p2   # or target one explicitly
 ```
 
-Sessions roll up to their most urgent pane, `N need you` appears on the status
-bar, and the sessions needing you sort to the top of their group. The state is
+Sessions roll up to their most urgent pane, `N sessions need you` appears on the
+status bar, and the sessions needing you sort to the top of their group. The
+sidebar's **Agents** tab counts and lists the individual panes instead, so the
+two numbers differ when one session holds several agents. The state is
 **self-reported on purpose**: a full-screen agent lives in the alt-screen, where
-guessing from output is unreliable. Two things adjust it automatically — a shell
-prompt clears a stale `working` (whatever was running has exited), and attaching
-to a pane clears `waiting`/`error`, since opening it is how you acknowledge it.
+guessing from output is unreliable.
 
-Wire it to [Claude Code](https://claude.com/claude-code) hooks in
-`.claude/settings.json` so the agent reports itself:
+Two things adjust it automatically, and both are facts rather than guesses:
+
+- A shell prompt clears a stale `working` — whatever was running has exited.
+- Attaching to a pane acknowledges its alert. What that means depends on the
+  state, because **acknowledging is not fixing**:
+  - `waiting` is *resolved* by attaching. It was blocked on you and now you are
+    there, so it clears to `idle`.
+  - `error` is only *acknowledged*. The failure is still a failure, so the state
+    and its note stay on the row — it just stops counting toward
+    `N sessions need you` and stops sorting to the top. Only `ru mark done`
+    (or a fresh mark) clears it. Otherwise glancing at a failure would make the
+    dashboard look healthier without anything having been fixed.
+
+A new report always resets the acknowledgment, so an agent that errors *again*
+after you looked at the last failure gets your attention back.
+
+### The alarm
+
+When a pane *starts* needing you, runic says so rather than waiting to be
+noticed:
+
+- the **terminal bell** rings once, for when you are looking at something else;
+- a **status-bar alert** names the agent and quotes what it asked —
+  `! agent-1 · p2: which schema?` — and stays up until that pane is attended to
+  or acknowledged.
+
+Both fire on the transition, not on every poll, so an agent you have already
+been told about stays quiet; an acknowledged error stops alarming entirely. Two
+agents blocking at once are two alerts, and the one kept waiting longest is the
+one named. If your terminal's bell is off, the status-bar alert still carries
+it, and `on_attention` (below) covers being told while the TUI isn't open.
+
+#### Self-reporting is wired for you
+
+A session you create with `--agent claude` is launched **already instrumented**:
+runic passes the hooks to Claude Code inline (`claude --settings '<json>'`), so
+nothing is written into your repository and your own settings are untouched.
+This matters more than it sounds — an agent that never calls `ru mark` leaves
+every attention state empty, and the sort, the chips, the tab glyphs and the
+alarm all sit idle with nothing to report. It used to be a manual step, and a
+session that skipped it looked identical to a healthy one.
+
+Instrumentation only ever touches a command runic recognizes: the first word has
+to be `claude`. Point the kind at your own wrapper and the command is used
+verbatim — appending a flag to an arbitrary program is a guess, and a launch
+that fails outright would be worse than one that does not self-report. The
+daemon log says so when it skips. An explicit `--settings` of your own also
+wins.
+
+For an agent **you** started — not launched by runic — print the snippet and
+wire it yourself:
+
+```bash
+ru agent hooks claude    # prints the .claude/settings.json block
+```
+
+Which is the same thing, by hand, in `.claude/settings.json`:
 
 ```json
 {
@@ -518,7 +770,8 @@ Wire it to [Claude Code](https://claude.com/claude-code) hooks in
 }
 ```
 
-The `|| true` keeps the hook harmless when the agent is run outside a runic pane.
+The `|| true` keeps the hook harmless when the agent is run outside a runic
+pane, and `ru agent hooks` prints exactly this block.
 
 Set `on_attention` to be told about transitions even when you aren't looking at
 the TUI. The command gets `RUNIC_SESSION`, `RUNIC_PANE`, `RUNIC_ATTENTION`,
@@ -541,7 +794,11 @@ cd ~/src/myapp
 ru session create agent-1 --worktree               # branch "agent-1"
 ru session create agent-2 --branch fix/login       # explicit branch
 ru session create agent-3 --worktree --repo ~/src/other
+ru session create agent-4 --worktree --agent claude  # isolated, agent started
 ```
+
+`--agent` and `--worktree` are independent: an agent in the main checkout is a
+legitimate thing to want, so neither implies the other.
 
 In the TUI, the **New session** box (`n`) has a `branch` field: leave it blank
 for an ordinary session, or name a branch to isolate it. Isolated sessions show
@@ -618,6 +875,7 @@ GOOS=windows GOARCH=amd64 go build -o ru.exe ./cmd/ru/
 
 - HW monitoring popup box
 - CI (vet + race tests across Linux/macOS/Windows)
+- Agent transition history (`ru wait --agent`, "how often did this agent block?")
 - Slots as an agent concurrency/cost governor (cap N agents, queue the rest)
 - Auto-enqueue a follow-up job when an agent finishes (run tests → open a PR)
 

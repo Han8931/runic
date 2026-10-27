@@ -12,6 +12,10 @@
 *.out
 coverage.txt
 
+# Demo recorder (tools/demo)
+__pycache__/
+*.pyc
+
 # IDE
 .idea/
 .vscode/
