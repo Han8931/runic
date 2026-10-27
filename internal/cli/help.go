@@ -64,6 +64,8 @@ Panes & attention:
                        working | waiting | done | error | clear. Run from inside
                        a pane (uses RUNIC_SESSION/RUNIC_PANE), or target one
                        explicitly with --session <name> [--pane <name>].
+                       done --claude-stop reads Claude's Stop JSON from stdin
+                       and uses its final response as the completion preview.
 
 Groups:
   group list           List all groups

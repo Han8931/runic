@@ -90,8 +90,9 @@ type Command struct {
 
 	// Attention is the state `ru mark` reports; Pane names the pane it applies
 	// to (empty means every pane in the session).
-	Attention protocol.Attention
-	Pane      string
+	Attention  protocol.Attention
+	Pane       string
+	ClaudeStop bool // read the completion note from a Claude Stop hook on stdin
 
 	// Worktree asks `session create` to give the session its own git worktree;
 	// Branch and Repo override the defaults (session name, current directory).

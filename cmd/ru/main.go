@@ -375,6 +375,9 @@ func dispatch(cmd *cli.Command) error {
 		if err != nil {
 			return err
 		}
+		if cmd.ClaudeStop {
+			cmd.Message = agent.ClaudeCompletion(os.Stdin)
+		}
 		return client.Mark(session, pane, cmd.Attention, cmd.Message)
 	default:
 		return fmt.Errorf("unknown action")

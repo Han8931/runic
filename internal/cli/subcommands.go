@@ -128,6 +128,8 @@ func parseMarkSubcommand(cmd *Command, args []string) (*Command, error) {
 	var note []string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "--claude-stop":
+			cmd.ClaudeStop = true
 		case "--session", "-g":
 			i++
 			if i >= len(args) {
@@ -145,6 +147,9 @@ func parseMarkSubcommand(cmd *Command, args []string) (*Command, error) {
 		}
 	}
 	cmd.Message = strings.Join(note, " ")
+	if cmd.ClaudeStop && (state != protocol.AttentionIdle || len(note) > 0) {
+		return nil, fmt.Errorf("--claude-stop requires mark done without a note")
+	}
 	return cmd, nil
 }
 

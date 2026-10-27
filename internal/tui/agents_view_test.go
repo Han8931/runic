@@ -372,3 +372,70 @@ func TestAgentViewReportsSilence(t *testing.T) {
 		t.Error("silence must not be reported as a failure")
 	}
 }
+
+func TestMainTabPositionsStayFixed(t *testing.T) {
+	for _, width := range []int{30, 80} {
+		m := agentsViewModel()
+		_, _, baseline := m.renderMainTabStrip(width)
+		for _, count := range []int{0, 9, 10, 99, 100, 1000} {
+			m.jobs.rows = make([]mgmtRow, count)
+			for _, view := range []mainView{mainJobs, mainAgents} {
+				m.jobs.main = view
+				for _, attention := range []protocol.Attention{protocol.AttentionWorking, protocol.AttentionWaiting} {
+					for i := range m.agents {
+						m.agents[i].Attention = attention
+					}
+					strip, _, spans := m.renderMainTabStrip(width)
+					for i, sp := range spans {
+						if sp != baseline[i] {
+							t.Fatalf("width %d, count %d, view %v: tab moved: %+v -> %+v", width, count, view, baseline[i], sp)
+						}
+						if !strings.Contains(stripAnsi(strip), sp.view.label()) {
+							t.Fatal("primary label clipped")
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestManagementFocusVisibleWithoutColor(t *testing.T) {
+	for _, view := range []mainView{mainJobs, mainAgents} {
+		m := agentsViewModel()
+		m.jobs.main = view
+		for _, treeFocus := range []bool{false, true} {
+			m.jobs.tree.focus = treeFocus
+			l := m.jobsLayout()
+			tree := stripAnsi(m.renderTreePanel(l.treeW, l.paneH)[0])
+			main := stripAnsi(m.renderListPanel(l.listW, l.listH, false)[0])
+			if strings.HasPrefix(tree, "┏") != treeFocus || strings.HasPrefix(main, "┏") == treeFocus {
+				t.Fatalf("focus %v: tree %q main %q", treeFocus, tree, main)
+			}
+		}
+	}
+}
+
+func TestAgentCompletionPreview(t *testing.T) {
+	m := agentsViewModel()
+	m.agents[0].Attention = protocol.AttentionIdle
+	m.agents[0].Note = "Fixed mouse navigation.\n\nTests passed.\tUpdated 3 files."
+	text := agentViewText(m, 100, 12)
+	if !strings.Contains(text, "Result: Fixed mouse navigation. Tests passed. Updated 3 files.") {
+		t.Fatalf("missing completion preview:\n%s", text)
+	}
+	for _, width := range []int{24, 40, 100} {
+		for _, row := range m.agentViewRows() {
+			line := m.agentViewDetailLine(row, true, width)
+			if strings.ContainsAny(line, "\n\r\t") || lipgloss.Width(line) != width {
+				t.Fatalf("preview breaks row layout at width %d: %q", width, line)
+			}
+		}
+	}
+	// A new working report replaces the prior completion note.
+	m.agents[0].Attention = protocol.AttentionWorking
+	m.agents[0].Note = ""
+	if strings.Contains(agentViewText(m, 100, 12), "Fixed mouse navigation") {
+		t.Fatal("previous result leaked into the next task")
+	}
+}

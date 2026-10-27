@@ -770,3 +770,18 @@ func TestParseAck(t *testing.T) {
 		t.Error("a third positional argument should be refused")
 	}
 }
+
+func TestParseClaudeCompletionMark(t *testing.T) {
+	cmd, err := Parse([]string{"mark", "done", "--claude-stop", "--session", "agent-1", "--pane", "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cmd.ClaudeStop || cmd.Attention != protocol.AttentionIdle || cmd.Session != "agent-1" || cmd.Pane != "p1" {
+		t.Fatalf("unexpected command: %+v", cmd)
+	}
+	for _, args := range [][]string{{"mark", "working", "--claude-stop"}, {"mark", "done", "--claude-stop", "extra note"}} {
+		if _, err := Parse(args); err == nil {
+			t.Fatalf("accepted invalid hook args: %v", args)
+		}
+	}
+}

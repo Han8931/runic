@@ -504,7 +504,7 @@ func run(jobsOnly bool) error {
 
 	// openJobsView's command is discarded during model setup. Enable capture
 	// here so mouseOn cannot suppress the first actual mouse-enable sequence.
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := newTUIProgram(m)
 	finalModel, err := p.Run()
 	if fm, ok := finalModel.(model); ok {
 		fm.closeShells()
@@ -523,4 +523,10 @@ func (m model) closeShells() {
 			closed[sh] = true
 		}
 	}
+}
+
+// newTUIProgram shares terminal setup with the startup regression test.
+func newTUIProgram(m tea.Model, options ...tea.ProgramOption) *tea.Program {
+	defaults := []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
+	return tea.NewProgram(m, append(defaults, options...)...)
 }

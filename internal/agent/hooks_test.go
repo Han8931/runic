@@ -182,3 +182,14 @@ func TestInstrumentIsIdempotent(t *testing.T) {
 		t.Errorf("second pass changed the command:\n%q\n%q", once, twice)
 	}
 }
+
+func TestStopHookCapturesCompletion(t *testing.T) {
+	var settings claudeSettings
+	if err := json.Unmarshal([]byte(ClaudeHookSettings()), &settings); err != nil {
+		t.Fatal(err)
+	}
+	command := settings.Hooks["Stop"][0].Hooks[0].Command
+	if command != "ru mark done --claude-stop 2>/dev/null || true" {
+		t.Fatalf("Stop must forward its stdin to the native completion reader: %s", command)
+	}
+}

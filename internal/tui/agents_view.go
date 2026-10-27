@@ -188,10 +188,13 @@ func (m model) agentViewDetailLine(r treeRow, selected bool, inner int) string {
 		bg = cRowFocusBg
 	}
 	style := treeEmptyStyle
-	text := r.note
+	text := strings.Join(strings.Fields(stripAnsi(r.note)), " ")
 	switch {
 	case text != "":
-		if protocol.Unresolved(r.attention, r.seen) {
+		if r.attention == protocol.AttentionIdle {
+			text = "Result: " + text
+			style = treeSummaryStyle
+		} else if protocol.Unresolved(r.attention, r.seen) {
 			// Its own words, quoted, because that is what you are answering.
 			text = "“" + text + "”"
 			style = treeSummaryStyle
@@ -322,26 +325,42 @@ func (m model) renderMainTabStrip(width int) (string, []tabSpan, []mainTabSpan) 
 			write("  ")
 		}
 		start := col
-		switch {
-		case v == m.jobs.main && v == mainAgents:
-			total, needs := m.agentViewSummary()
-			label := fmt.Sprintf(" %s %d ", v.label(), total)
+		count := len(m.jobs.rows)
+		urgent := false
+		if v == mainAgents {
+			var needs int
+			count, needs = m.agentViewSummary()
 			if needs > 0 {
-				label = fmt.Sprintf(" %s %d! ", v.label(), needs)
+				count, urgent = needs, true
 			}
+		}
+		// Reserve four cells for counts in both states. Capping the badge
+		// keeps labels and click targets fixed even when counts grow.
+		badge := fmt.Sprint(count)
+		if urgent {
+			if count > 99 {
+				badge = "99+"
+			}
+			badge += "!"
+		} else if count > 999 {
+			badge = "999+"
+		}
+		label := fmt.Sprintf(" %s %-4s ", v.label(), badge)
+		if width < 40 {
+			label = " " + v.label() + " "
+			if v == mainAgents {
+				label = " Agents  "
+				if urgent {
+					label = " Agents! "
+				}
+			}
+		}
+		if v == m.jobs.main {
 			write(chipStyle.Render(label))
-		case v == m.jobs.main:
-			write(chipStyle.Render(fmt.Sprintf(" %s %d ", v.label(), len(m.jobs.rows))))
-		case v == mainAgents:
-			// A blocked agent has to be visible from the Jobs view, or the tab
-			// is only useful once you already suspect something.
-			if _, needs := m.agentViewSummary(); needs > 0 {
-				write(tabInactiveStyle.Render(v.label()+" ") + attnWaitingStyle.Render(fmt.Sprintf("%d!", needs)))
-			} else {
-				write(tabInactiveStyle.Render(v.label()))
-			}
-		default:
-			write(tabInactiveStyle.Render(v.label()))
+		} else if urgent {
+			write(attnWaitingStyle.Render(label))
+		} else {
+			write(tabInactiveStyle.Render(label))
 		}
 		mains = append(mains, mainTabSpan{view: v, start: start, end: col})
 	}

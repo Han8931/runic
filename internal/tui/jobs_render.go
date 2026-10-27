@@ -300,13 +300,15 @@ func (m model) renderJobsView(w, h int) string {
 // its frame in the accent so focus reads from across the screen.
 func paneBox(lines []string, w, h int, focused bool) []string {
 	st := borderStyle
+	tl, tr, bl, br, horizontal, vertical := "╭", "╮", "╰", "╯", "─", "│"
 	if focused {
 		st = focusBorderStyle
+		tl, tr, bl, br, horizontal, vertical = "┏", "┓", "┗", "┛", "━", "┃"
 	}
 	inner := max(0, w-2)
-	side := st.Render("│")
+	side := st.Render(vertical)
 	out := make([]string, 0, h)
-	out = append(out, st.Render("╭"+strings.Repeat("─", inner)+"╮"))
+	out = append(out, st.Render(tl+strings.Repeat(horizontal, inner)+tr))
 	for i := 0; i < h-2; i++ {
 		l := ""
 		if i < len(lines) {
@@ -314,7 +316,7 @@ func paneBox(lines []string, w, h int, focused bool) []string {
 		}
 		out = append(out, side+fitToWidth(l, inner)+side)
 	}
-	return append(out, st.Render("╰"+strings.Repeat("─", inner)+"╯"))
+	return append(out, st.Render(bl+strings.Repeat(horizontal, inner)+br))
 }
 
 // renderTreePanel draws the Sessions pane: its header (with the inbox count)
@@ -353,13 +355,18 @@ func (m model) renderListPanel(w, h int, overlay bool) []string {
 		lines = append(lines, jobsHeaderStyle.Render(fitToWidth(" "+m.jobsHeaderRow(cols), inner)))
 		lines = append(lines, m.mgmtBodyLines(max(1, h-4), inner, cols)...)
 	}
-	out := paneBox(lines, w, h, !m.jobs.tree.focus || !m.jobs.tree.show)
+	focused := !m.jobs.tree.focus || !m.jobsLayout().showTree
+	out := paneBox(lines, w, h, focused)
 	// The session strip scopes the *job table*, so it only earns the pane's top
 	// row while the table is what is showing. Leaving it up in the Agents view
 	// put a control that does nothing on the most prominent line of the screen.
 	if !overlay && m.jobs.main == mainJobs {
 		sessions, _ := m.jobsSessionStrip(inner)
-		out[0] = borderStyle.Render("╭") + sessions + borderStyle.Render("╮")
+		if focused {
+			out[0] = focusBorderStyle.Render("┏") + sessions + focusBorderStyle.Render("┓")
+		} else {
+			out[0] = borderStyle.Render("╭") + sessions + borderStyle.Render("╮")
+		}
 	}
 	return out
 }
@@ -771,7 +778,11 @@ func (m model) sessionDetailLines(inner int) ([]string, string, bool) {
 		// The request, wrapped. A clipped question reads as a different, shorter
 		// question.
 		if r.note != "" {
-			lines = append(lines, wrapField(inner, "Asked", r.note)...)
+			label := "Asked"
+			if r.attention == protocol.AttentionIdle {
+				label = "Result"
+			}
+			lines = append(lines, wrapField(inner, label, r.note)...)
 		}
 		// What it printed, for when "done" is all it said. Fetched per selection
 		// rather than on every poll; see agentTailMsg.

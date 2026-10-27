@@ -29,10 +29,11 @@ import (
 // agent's question, which is the whole value of the row it lands on; jq is how
 // the hook payload is read, and its absence degrades to an empty note rather
 // than a lost mark.
+// Stop reads its completion payload through ru itself, without a jq dependency.
 var hookCommands = map[string]string{
 	"UserPromptSubmit": `ru mark working 2>/dev/null || true`,
 	"Notification":     `ru mark waiting "$(jq -r .message 2>/dev/null)" 2>/dev/null || true`,
-	"Stop":             `ru mark done 2>/dev/null || true`,
+	"Stop":             `ru mark done --claude-stop 2>/dev/null || true`,
 }
 
 // Claude Code's settings shape: each event holds matcher groups, each group a

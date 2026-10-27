@@ -740,9 +740,14 @@ A process inside a pane reports its own state. Panes get `RUNIC_SESSION` and
 ru mark working                      # from inside a pane
 ru mark waiting "which schema?"      # the note shows in the tree
 ru mark error "tests failed"
-ru mark done
+ru mark done "Fixed navigation. Tests passed."
 ru mark idle --session agent-1 --pane p2   # or target one explicitly
 ```
+
+The main **Agents** view shows a completed agent's note as a `Result:` preview
+in its default two-line rows. Press Enter to open the session for the full
+response; compact rows hide the preview. Starting the next task clears the old
+note when the agent reports `working`.
 
 Sessions roll up to their most urgent pane, `N sessions need you` appears on the
 status bar, and the sessions needing you sort to the top of their group. The
@@ -823,7 +828,7 @@ Which is the same thing, by hand, in `.claude/settings.json`:
       {"hooks": [{"type": "command", "command": "ru mark waiting \"$(jq -r .message)\" 2>/dev/null || true"}]}
     ],
     "Stop": [
-      {"hooks": [{"type": "command", "command": "ru mark done 2>/dev/null || true"}]}
+      {"hooks": [{"type": "command", "command": "ru mark done --claude-stop 2>/dev/null || true"}]}
     ],
     "UserPromptSubmit": [
       {"hooks": [{"type": "command", "command": "ru mark working 2>/dev/null || true"}]}
@@ -834,6 +839,18 @@ Which is the same thing, by hand, in `.claude/settings.json`:
 
 The `|| true` keeps the hook harmless when the agent is run outside a runic
 pane, and `ru agent hooks` prints exactly this block.
+
+The Stop hook reads Claude's `last_assistant_message` directly from JSON on
+stdin, without `jq`, and stores up to 2,000 characters as the completion note.
+This is an excerpt of the actual response, not a generated summary. Missing or
+invalid payloads still mark the agent done, without a preview. See the
+[Claude Stop hook reference](https://code.claude.com/docs/en/hooks#stop-input).
+Automatic previews apply to Claude sessions launched with the updated hooks;
+existing sessions need the updated Stop hook and a restart of Claude. Other
+agents can supply the same preview with `ru mark done "summary"`.
+Runic's daemon installs these hooks at agent launch, so a daemon started before
+this update must also be restarted after its current work finishes. Installing
+the binary or restarting just the TUI does not update a running daemon's hooks.
 
 Set `on_attention` to be told about transitions even when you aren't looking at
 the TUI. The command gets `RUNIC_SESSION`, `RUNIC_PANE`, `RUNIC_ATTENTION`,
